@@ -13,7 +13,7 @@ case "$(detect_os)" in
     app=$(orca_app_path)
     executable="$app/Contents/MacOS/Orca"
     resources="$app/Contents/Resources" ;;
-  linux) die 'orca-rpc: Orca on Linux is not implemented in P0 (planned for P2).' ;;
+  linux) die 'orca-rpc: Orca on Linux is not implemented yet (P2).' ;;
   *) die 'orca-rpc: unsupported operating system.' ;;
 esac
 [ -x "$executable" ] || die "orca-rpc: Orca executable not found at $executable (set ORCA_APP_PATH)."

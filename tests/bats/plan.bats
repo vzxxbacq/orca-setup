@@ -43,23 +43,6 @@ snapshot() { # snapshot <name>: compare $output with tests/bats/fixtures/<name>,
   snapshot plan-macos-server-modules.txt
 }
 
-@test "--plan on Linux reports detection and that P0 does not implement it" {
-  fake_uname Linux x86_64
-  fake_os_release ubuntu 24.04 debian
-  run_setup --plan
-  [ "$status" -eq 0 ]
-  [ "${lines[1]}" = 'Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide' ]
-  [[ "${lines[2]}" == 'Linux packaging is not implemented in P0'* ]]
-}
-
-@test "--apply is refused on Linux in P0" {
-  fake_uname Linux x86_64
-  fake_os_release debian 12
-  run_setup --apply --role server
-  [ "$status" -ne 0 ]
-  [[ "$output" == *'not implemented for this device in P0'* ]]
-}
-
 @test "refuses to run as root" {
   fake_cmd id 'echo 0'
   run_setup --plan
@@ -75,9 +58,11 @@ snapshot() { # snapshot <name>: compare $output with tests/bats/fixtures/<name>,
   [ "$status" -eq 1 ]
 }
 
-@test "--apply refuses a device that holds the other role, before installing anything" {
+@test "--apply checks the role after the baseline and refuses the other role before any Orca step" {
   printf '{"ok":true,"result":{"environments":[{"name":"mini"}]}}\n' >"$ORCA_USER_DATA/cli-environments.json"
+  fake_baseline_present
   run_setup --apply --role server
+  [[ "$output" == *'PRESENT tmux'* ]]
   [ "$status" -eq 1 ]
   [[ "$output" == *'saved environment: mini'* ]]
   [[ "$output" == *'already holds the other pairing role'* ]]
@@ -85,6 +70,7 @@ snapshot() { # snapshot <name>: compare $output with tests/bats/fixtures/<name>,
 
 @test "--apply refuses when the pairing role cannot be determined" {
   echo 'not json' >"$ORCA_USER_DATA/orca-devices.json"
+  fake_baseline_present
   run_setup --apply --role client
   [ "$status" -eq 1 ]
   [[ "$output" == *'ROLE unknown'* ]]

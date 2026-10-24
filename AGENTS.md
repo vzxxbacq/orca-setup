@@ -14,7 +14,7 @@ Guidance for agents and humans working in this repository.
 ## Ground rules
 
 - **Read-only by default.** Running with no arguments must only print what would happen (`--plan`).
-- **Never run as root.** Refuse `sudo ./setup.sh`; optional modules may call `sudo` internally when required.
+- **Never run as root.** Refuse `sudo ./setup.sh`; optional modules and, on Linux, the baseline apt steps may call `sudo` internally when required, and `--plan` lists every such command.
 - **Preserve existing installs.** Detect first and install only what is missing; do not upgrade tools that are already present.
 - **Never handle credentials.** Do not import, copy, print or commit tokens, keys or passwords; all authentication is interactive on the target device.
 

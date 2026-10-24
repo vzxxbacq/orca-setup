@@ -3,7 +3,7 @@
 #   check   command(s) that prove the agent is installed; an agent installed any other way is left alone
 #   group   baseline (installed by --apply) or the optional module that installs it
 #   macos   npm:<package> (installed with npm --prefix ~/.local) | installer:<official install.sh URL>
-#   debian  same methods; "tbd" while Linux support is unconfirmed (README section 9)
+#   debian  same methods for Ubuntu 24.04 / Debian 12 (x86_64); "-" marks an agent as macOS-only
 # Order matters: bun is installed before omp, which needs it.
 
 codex	codex	baseline	npm:@openai/codex	npm:@openai/codex
@@ -14,5 +14,5 @@ pi	pi	baseline	npm:@earendil-works/pi-coding-agent	npm:@earendil-works/pi-coding
 bun	bun	baseline	npm:bun	npm:bun
 omp	omp	baseline	npm:@oh-my-pi/pi-coding-agent	npm:@oh-my-pi/pi-coding-agent
 grok	grok	baseline	installer:https://x.ai/cli/install.sh	installer:https://x.ai/cli/install.sh
-agy	agy	baseline	installer:https://antigravity.google/cli/install.sh	tbd
+agy	agy	baseline	installer:https://antigravity.google/cli/install.sh	installer:https://antigravity.google/cli/install.sh
 gemini	gemini	agent-gemini	npm:@google/gemini-cli	npm:@google/gemini-cli

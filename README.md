@@ -1,6 +1,6 @@
 # orca-setup — PLAN
 
-> Status: **P0 implemented (macOS parity)**; Linux is detected but not provisioned yet (P1/P2).
+> Status: **P0 (macOS parity) and P1 (Linux baseline) implemented**; Orca itself on Linux is P2.
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -8,7 +8,7 @@
 
 ---
 
-## 0. Usage (P0)
+## 0. Usage
 
 ```sh
 ./setup.sh                          # same as --plan: print what would happen on this device, change nothing
@@ -22,8 +22,12 @@
 - Optional modules (`--power --containers --apple --android --media --agent-gemini`) only run together with
   `--apply`; with `--plan` (or no mode) they are shown in detail. They never run on their own.
 - `--auth-*` flags are their own mode and cannot be combined with `--plan`, `--apply` or `--check`.
-- Run as your regular user; `sudo ./setup.sh` is refused. Only `--power` and `--apple` call `sudo` themselves.
-- On Linux, P0 only prints detection results and states that provisioning is not implemented yet.
+- Run as your regular user; `sudo ./setup.sh` is refused. On macOS only `--power` and `--apple` call `sudo`
+  themselves; on Linux the baseline apt steps (packages, repository keys and source lists) also run through `sudo`,
+  and `--plan` prints every one of those commands.
+- On Linux (Ubuntu 24.04 / Debian 12, x86_64; anything else is refused) `--apply` installs the baseline tools and
+  agents and writes the PATH block (§3.1), then skips Orca with a P2 notice; optional modules are skipped until P3
+  and only `--auth-gh` works. `--check` does not count Orca items on Linux until P2.
 
 ---
 
@@ -58,11 +62,11 @@
 | Principle | How it is implemented |
 |---|---|
 | Read-only by default | no arguments = `--plan`, which only prints what would happen |
-| Run as non-root | check `id -u`, refuse `sudo ./setup.sh`; only explicit modules (`--power` etc.) call `sudo` internally when needed |
+| Run as non-root | check `id -u`, refuse `sudo ./setup.sh`; `sudo` is called internally only where root is required: on Linux the baseline apt steps (packages, repository keys, source lists), on both platforms explicit modules (`--power` etc.); `--plan` lists every such command |
 | Preserve existing installs | detect first (`command -v` / package-manager query), install only when missing; never upgrade existing versions |
 | No credential leakage | `umask 077`; the audit prints booleans/names only, never values |
 | npm first | agent CLIs are installed from npm whenever a package exists; vendor installers only when there is none |
-| User-level first | npm global tools go to `~/.local` (`npm --prefix ~/.local`); PATH always includes `~/.local/bin` |
+| User-level first | npm global tools go to `~/.local` (`npm --prefix ~/.local`); PATH always includes `~/.local/bin`, and on Linux `--apply` persists it in `~/.profile` and `~/.zshrc` |
 | Single source of truth | tool lists live in `manifest/` and are read per platform, so the macOS and Linux lists cannot drift |
 | One pairing role per host | every device is either a client or a server, never both (§5.1) |
 
@@ -72,15 +76,32 @@
 
 ### 3.1 Baseline tools (installed by `--apply`)
 
-| Tool | Purpose | macOS install | Linux install (planned) |
+| Tool | Purpose | macOS install | Linux install (Ubuntu 24.04 / Debian 12) |
 |---|---|---|---|
-| git, git-lfs | version control | brew | apt/dnf |
-| gh | GitHub CLI / authentication | brew | official GitHub apt repo |
+| git, git-lfs | version control | brew | apt |
+| gh | GitHub CLI / authentication | brew | official GitHub CLI apt repo |
 | ripgrep, jq, tmux, cmake, pkg-config | general dev/agent dependencies | brew (`pkgconf`) | apt (`ripgrep jq tmux cmake pkg-config build-essential`) |
 | Node.js 24 | agent CLIs, pnpm projects | brew `node@24` | NodeSource 24.x apt repo |
 | pnpm | JS projects | npm → `~/.local` | same |
 | Python 3.12 + uv + ruff | Python projects | brew `python@3.12 uv ruff` | official uv installer → `uv python install 3.12`; `uv tool install ruff` |
 | curl, unzip, ca-certificates | installer dependencies | shipped with the OS | apt |
+| gnupg | verifies the apt repository keys | not needed | apt |
+
+Linux notes:
+
+- `--apply` installs in this order: distribution packages (one `apt-get update` first), then the third-party apt
+  repositories (GitHub CLI, NodeSource 24.x) and their packages, then official installers (uv, grok, agy), npm
+  packages, and finally `uv python install 3.12` and `uv tool install ruff`. Everything after the apt steps is
+  user-level (`~/.local`); only the apt steps use `sudo`.
+- Third-party repositories follow each vendor's own layout: the key goes to `/etc/apt/keyrings/` and the source list
+  uses `signed-by=`. The expected primary-key fingerprints are recorded in `manifest/apt-repos.tsv`; a downloaded key
+  is trusted only when every primary key in it is listed there, otherwise `--apply` stops before writing anything.
+  A repository is only added when its package is missing. Docker Engine's repository belongs to `--containers` (P3).
+- PATH: `--apply` appends a marked block (`# >>> orca-setup PATH >>>`) that puts `~/.local/bin` on PATH to
+  `~/.profile` and `~/.zshrc` (created when missing), once, only when the block is not there yet. The uv installer
+  is run with `UV_NO_MODIFY_PATH=1`; grok's installer links itself into `~/.local/bin`.
+- The pairing role check needs Node.js, which a fresh Linux device does not have, so `--apply` runs it after the
+  baseline install and before any Orca step (on both platforms, §5.1).
 
 ### 3.2 Agent CLIs
 
@@ -96,10 +117,12 @@ cask) is detected and left alone.
 | Pi (`pi`) | yes | npm `@earendil-works/pi-coding-agent` (needs Node ≥ 22.19) | run `pi` interactively |
 | OMP (`omp`) | yes | npm `@oh-my-pi/pi-coding-agent`; needs Bun ≥ 1.3.14, installed from npm `bun` | run `omp` interactively |
 | Grok (`grok`) | yes | no npm package: official installer `curl -fsSL https://x.ai/cli/install.sh \| bash` (installs under `~/.grok`) | run `grok` and sign in in the browser |
-| Antigravity (`agy`) | yes | no npm package: official `install.sh` (**Linux support to be confirmed**) | run `agy` interactively and sign in to Google |
+| Antigravity (`agy`) | yes | no npm package: official `install.sh` (installs into `~/.local/bin`; the installer supports Linux x86_64) | run `agy` interactively and sign in to Google |
 | Gemini (`gemini`) | **optional** (`--agent-gemini`) | npm `@google/gemini-cli` | not usable with personal accounts, so it is never installed by default |
 
-Package names are recorded in `manifest/agents.tsv`, not in scripts.
+Package names are recorded in `manifest/agents.tsv`, not in scripts. Every baseline agent is installed on Linux x86_64
+too; an agent whose installer does not support Linux would get `-` in the `debian` column (macOS-only). Whether agy's
+sign-in works on a headless host is still to be verified (§9).
 
 ### 3.3 Orca
 
@@ -164,6 +187,9 @@ Modules are selected on the command line and run only with `--apply`; their pack
 
 - Port `audit-readiness.cjs`: booleans/names only; covers whether env vars exist, auth and MCP names for claude/gemini/dsh/pi/codex, and cloud configs (gcloud/aws/azure/docker/npm).
 - Add: a `PRESENT/MISSING` tool list, versions (node/pnpm/python/uv), Orca runtime reachability, whether the Orca accounts (codex/claude) are selected, whether Linear is connected (only when `--task-source linear` was chosen), whether gh is logged in, the pairing role check (§5.1); on Linux also the systemd user unit state and linger.
+- On Linux in P1, Orca is not checked and not counted (`SKIP orca`, `Orca: not checked on Linux until P2`); the
+  PATH block in `~/.profile` and `~/.zshrc` is checked and counted instead. After `--apply`, the only counted item
+  on a fresh Linux device is the interactive GitHub login.
 - Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
   agents from the manifest, a missing Orca CLI, an unreachable Orca runtime, missing Orca skills, a `PENDING` GitHub
   login or Codex account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
@@ -196,12 +222,13 @@ orca-setup/
 │   ├── manifest.sh              # manifest parsing and local overlay merge
 │   ├── json.cjs                 # JSON helpers for the shell (names/booleans only)
 │   ├── pkg-macos.sh             # brew formulae / casks
-│   ├── pkg-debian.sh            # (P1) apt (incl. third-party repos: gh, NodeSource, Docker)
+│   ├── pkg-debian.sh            # apt and third-party apt repos (gh, NodeSource; Docker in P3), sudo steps
 │   ├── pkg-fedora.sh            # (later) dnf placeholder
 │   └── npm-tools.sh             # npm global tools under ~/.local
 ├── manifest/
 │   ├── baseline.tsv             # tool → per-platform package/install method (single source of truth)
 │   ├── agents.tsv               # agent CLI inventory (baseline / optional, per-platform support)
+│   ├── apt-repos.tsv            # third-party apt repositories and their expected key fingerprints
 │   ├── orca-skills.tsv          # Orca skills per platform and their install targets
 │   ├── orca-settings.json       # Orca default settings and opt-in task sources
 │   └── local.example/           # placeholder overlay; the real manifest/local/ is git-ignored
@@ -215,9 +242,10 @@ orca-setup/
 │   └── systemd/orca-serve.service  # (P2)
 ├── audit/readiness.cjs          # read-only audit
 ├── remote/provision.sh          # (P4) push and run from the control machine (§5)
+├── .github/workflows/ci.yml     # static checks + bats on Ubuntu and macOS; Linux integration containers
 └── tests/
-    ├── bats/                    # unit tests (detect, manifest, role, readiness, --plan snapshots, static checks)
-    └── docker/                  # (P1) Linux matrix: ubuntu:24.04, debian:12 (amd64)
+    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, --plan snapshots, static checks)
+    └── docker/integration.sh    # Linux integration run inside ubuntu:24.04 / debian:12 (amd64) containers
 ```
 
 ---
@@ -264,7 +292,9 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - `setup.sh --role client|server` is required for `--apply`; `--plan` shows what the role implies.
 - `--role server` never runs `orca environment add`; `--role client` never prints a runtime pairing code.
 - `--apply` refuses to continue when the device already holds the other role (saved environments on a server, or
-  runtime clients seen recently on a client) and names the pairings to remove. Mobile pairings do not count.
+  runtime clients seen recently on a client) and names the pairings to remove. Mobile pairings do not count. The
+  check runs after the baseline install (which brings Node.js to a fresh Linux device) and before any Orca step, so
+  the baseline is never blocked by it.
 - `--check` reports the current role and flags a dual role.
 - How the role is read (`orca/role.sh`, read-only): saved environments come from `orca environment list --json`
   (falling back to `orca-environments.json`); runtime clients come from the device registry `orca-devices.json` in
@@ -301,6 +331,15 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - Orca skills and settings are skipped when already in place; `--auth-claude` is skipped when an account is selected.
 - `--check` counts GitHub, Codex and role problems in its exit code, and also prints the `READINESS_JSON` audit.
 
+### 6.2 P1 notes (Linux baseline)
+
+- Linux devices other than Ubuntu 24.04 / Debian 12 on x86_64 are refused by `--plan`, `--apply` and `--check`
+  with the reason (arm64, or the distribution and release).
+- The pairing role check moved after the baseline install on both platforms (§5.1); it still runs before any Orca step.
+- On Linux, `--apply` skips the Orca section (`SKIP orca`, P2) and optional modules (P3); `--check` does not count
+  Orca items; `--auth-gh` is the only auth mode on Linux.
+- A second `--apply` prints only `PRESENT` lines (plus the deferred items and the role report) and runs no step.
+
 ---
 
 ## 7. Test strategy
@@ -309,7 +348,12 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - **Unit**: bats tests for `detect.sh` (fake `/etc/os-release`, `uname`), manifest parsing, role checks and `--plan` output snapshots.
   Run `bats tests/bats`; every test runs in a sandbox whose `PATH` holds only fakes and a few core utilities. Refresh
   snapshots with `UPDATE_SNAPSHOTS=1 bats tests/bats/plan.bats` and review the diff.
-- **Linux integration**: Docker matrix (ubuntu:24.04 / debian:12, amd64), running `--apply` twice plus `--check`; systemd pieces verified on a real VM.
+- **Linux integration**: GitHub Actions container matrix (ubuntu:24.04 / debian:12, amd64; `.github/workflows/ci.yml`).
+  `tests/docker/integration.sh` runs as a non-root user with passwordless sudo: `--apply --role server` twice (the
+  second run must run no step and leave packages, apt sources, keyrings and dotfiles unchanged), a login shell must
+  find the user-level tools, and `--check` must count only the interactive GitHub login. systemd pieces (P2) are
+  verified on a real VM.
+- **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`.
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
 
@@ -353,7 +397,8 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 
 **Open**
 
-1. **Linux support** of `agy` and `computer-use`: to be verified on a real machine in P2.
+1. **Linux support** of `computer-use`, and agy's interactive sign-in on a headless host: to be verified on a real
+   machine in P2. (agy's installer itself supports Linux x86_64 and is part of the P1 baseline.)
 
 ---
 

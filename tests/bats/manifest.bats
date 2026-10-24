@@ -98,3 +98,39 @@ use_copy() {
   ORCA_SETUP_MANIFEST_DIR=$SB/manifest run node "$REPO_ROOT/lib/json.cjs" settings
   [ "$output" = '{"defaultTuiAgent":"claude","agentStatusHooksEnabled":true}' ]
 }
+
+@test "Linux column: every baseline row has a known Debian method" {
+  run bash -c "cat '$REPO_ROOT/manifest/baseline.tsv' '$REPO_ROOT/manifest/agents.tsv' | awk -F'\t' '!/^[[:space:]]*(#|\$)/ && \$3 == \"baseline\" && \$5 !~ /^(apt|apt-repo|npm|installer|uv-python|uv-tool|orca-deb):[^:]/ && \$5 != \"-\" { print }'"
+  [ -z "$output" ]
+  run manifest_select baseline.tsv debian baseline
+  [[ "$output" == *$'gh\tgh\tapt-repo:gh:gh'* ]]
+  [[ "$output" == *$'node\tnode\tapt-repo:nodesource:nodejs'* ]]
+  [[ "$output" == *$'gnupg\tgpg\tapt:gnupg'* ]]
+  [[ "$output" == *$'python\tpython3.12\tuv-python:3.12'* ]]
+  [[ "$output" == *$'ruff\truff\tuv-tool:ruff'* ]]
+}
+
+@test "Linux column: every baseline agent is supported on Linux x86_64 (none is macOS-only)" {
+  [ "$(manifest_select agents.tsv debian baseline | cut -f1)" = "$(manifest_select agents.tsv macos baseline | cut -f1)" ]
+  run manifest_select agents.tsv debian baseline
+  [[ "$output" == *$'agy\tagy\tinstaller:https://antigravity.google/cli/install.sh'* ]]
+}
+
+@test "apt-repos.tsv: eight fields, uppercase 40-hex fingerprints, and every apt-repo method resolves" {
+  run awk -F'\t' '!/^[[:space:]]*(#|$)/ && NF != 8 { print }' "$REPO_ROOT/manifest/apt-repos.tsv"
+  [ -z "$output" ]
+  run bash -c "awk -F'\t' '!/^[[:space:]]*(#|\$)/ { print \$3 }' '$REPO_ROOT/manifest/apt-repos.tsv' | tr ',' '\n' | grep -vxE '[0-9A-F]{40}'"
+  [ -z "$output" ]
+  local repo
+  for repo in $(manifest_rows baseline.tsv | cut -f5 | sed -n 's/^apt-repo:\([^:]*\):.*/\1/p'); do
+    manifest_rows apt-repos.tsv | cut -f1 | grep -qx "$repo"
+  done
+  [ "$(manifest_rows apt-repos.tsv | cut -f1,2)" = "$(printf '%s\t%s\n' \
+    gh https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key)" ]
+}
+
+@test "Debian install order: apt, repositories, installers, npm, then uv-managed tools" {
+  . "$REPO_ROOT/lib/pkg-debian.sh"
+  [ "$(manifest_select baseline.tsv debian baseline | debian_order | cut -f1 | paste -sd ' ' -)" = 'git git-lfs ripgrep jq tmux cmake pkg-config build-essential curl unzip ca-certificates gnupg gh node uv pnpm python ruff orca' ]
+}

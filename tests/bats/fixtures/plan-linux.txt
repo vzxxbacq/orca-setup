@@ -1,0 +1,72 @@
+orca-setup plan (read-only; nothing is changed)
+Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide
+Pairing role: not chosen (required for --apply); detected: none
+sudo: present; --apply runs only the sudo commands listed below as root
+Baseline tools (--apply):
+  present  git
+  install  git-lfs                apt git-lfs
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git-lfs
+  install  ripgrep                apt ripgrep
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ripgrep
+  install  jq                     apt jq
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends jq
+  install  tmux                   apt tmux
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends tmux
+  install  cmake                  apt cmake
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake
+  install  pkg-config             apt pkg-config
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config
+  install  build-essential        apt build-essential
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential
+  present  curl
+  install  unzip                  apt unzip
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends unzip
+  install  ca-certificates        apt ca-certificates
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates
+  install  gnupg                  apt gnupg
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnupg
+  install  gh                     apt gh from https://cli.github.com/packages
+           download https://cli.github.com/packages/githubcli-archive-keyring.gpg, require fingerprint(s) 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325
+           sudo install -d -m 0755 <sandbox>/apt/keyrings
+           sudo install -m 0644 <verified key> <sandbox>/apt/keyrings/githubcli-archive-keyring.gpg
+           sudo install -m 0644 <source list> <sandbox>/apt/sources.list.d/github-cli.list
+             deb [arch=amd64 signed-by=<sandbox>/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gh
+  present  node
+  install  uv                     official installer https://astral.sh/uv/install.sh
+  install  pnpm                   npm pnpm -> ~/.local
+  install  python                 uv python install 3.12
+  install  ruff                   uv tool install ruff
+  later    orca                   Orca headless runtime (.deb), P2
+Agent CLIs (--apply):
+  install  grok                   official installer https://x.ai/cli/install.sh
+  install  agy                    official installer https://antigravity.google/cli/install.sh
+  install  codex                  npm @openai/codex -> ~/.local
+  install  claude                 npm @anthropic-ai/claude-code -> ~/.local
+  install  dsh                    npm @deepseek-ai/dsh -> ~/.local
+  install  dsh-tui                npm @deepseek-harness-tui/dsh-tui -> ~/.local
+  install  pi                     npm @earendil-works/pi-coding-agent -> ~/.local
+  install  bun                    npm bun -> ~/.local
+  install  omp                    npm @oh-my-pi/pi-coding-agent -> ~/.local
+PATH (--apply):
+  add      PATH block in ~/.profile    puts ~/.local/bin on PATH once (marked block)
+  add      PATH block in ~/.zshrc      puts ~/.local/bin on PATH once (marked block)
+Pairing role check (--apply): after the baseline install, before any Orca step
+Orca (--apply): skipped on Linux until P2 (headless runtime, skills and settings)
+Optional modules: Linux versions arrive in P3; --apply skips them on Linux.
+  --power
+  --containers
+  --apple
+  --android
+  --media
+  --agent-gemini
+Authentication (interactive, run on their own):
+  --auth-gh       GitHub browser authentication, retaining an existing valid login.
+  --auth-codex    Linux: arrives with Orca on Linux (P2/P3).
+  --auth-claude   Linux: arrives with Orca on Linux (P2/P3).
+  --auth-agy      Linux: arrives with Orca on Linux (P2/P3).
+  --auth-linear   Linux: arrives with Orca on Linux (P2/P3).
+  --check         Show baseline and authentication readiness, without printing credentials.
+Existing installations and user configuration are preserved. SSH is never configured.

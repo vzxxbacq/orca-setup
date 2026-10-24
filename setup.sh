@@ -13,6 +13,8 @@ ORCA_SETUP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$ORCA_SETUP_ROOT/lib/manifest.sh"
 # shellcheck source=lib/pkg-macos.sh
 . "$ORCA_SETUP_ROOT/lib/pkg-macos.sh"
+# shellcheck source=lib/pkg-debian.sh
+. "$ORCA_SETUP_ROOT/lib/pkg-debian.sh"
 # shellcheck source=lib/npm-tools.sh
 . "$ORCA_SETUP_ROOT/lib/npm-tools.sh"
 for file in "$ORCA_SETUP_ROOT"/modules/*.sh "$ORCA_SETUP_ROOT"/auth/*.sh; do
@@ -126,20 +128,56 @@ method_label() {
     npm:*) printf 'npm %s -> ~/.local' "${1#npm:}" ;;
     installer:*) printf 'official installer %s' "${1#installer:}" ;;
     os) printf 'shipped with macOS (Command Line Tools)' ;;
+    apt:*) printf 'apt %s' "${1#apt:}" ;;
+    apt-repo:*) printf 'apt %s from %s' "${1##*:}" "$(apt_repo_uri "$(printf '%s' "${1#apt-repo:}" | cut -d: -f1)")" ;;
+    uv-python:*) printf 'uv python install %s' "${1#uv-python:}" ;;
+    uv-tool:*) printf 'uv tool install %s' "${1#uv-tool:}" ;;
+    orca-deb:*) printf 'Orca headless runtime (.deb), P2' ;;
     *) printf '%s' "$1" ;;
   esac
 }
 
 # row_present <check> <method>: detected through the check command, or through the package manager.
+# A "-" check on an apt row means only dpkg can tell.
 row_present() {
-  is_present "$1" && return 0
-  case "$2" in brew:* | cask:*) macos_installed "$2" ;; *) return 1 ;; esac
+  case "$2" in
+    apt:* | apt-repo:*) { [ "$1" != - ] && is_present "$1"; } || debian_installed "$2" ;;
+    brew:* | cask:*) is_present "$1" || macos_installed "$2" ;;
+    *) is_present "$1" ;;
+  esac
+}
+
+# Rows deferred to a later phase on this platform print why instead of being installed or counted.
+deferred_phase() {
+  case "$1" in orca-deb:*) echo P2 ;; *) return 1 ;; esac
+}
+
+# platform_rows <file.tsv> <group>: the group's rows for this platform, in install order.
+platform_rows() {
+  if [ "$PLATFORM" = debian ]; then manifest_select "$1" debian "$2" | debian_order; else manifest_select "$1" "$PLATFORM" "$2"; fi
+}
+
+# install_row <method>: install one missing row with its method.
+install_row() {
+  case "$1" in
+    npm:*) npm_install "${1#npm:}" ;;
+    installer:*) run_installer "${1#installer:}" ;;
+    uv-python:*) have uv || die 'uv is required to install Python.'; step uv python install "${1#uv-python:}" ;;
+    uv-tool:*) have uv || die "uv is required to install ${1#uv-tool:}."; step uv tool install "${1#uv-tool:}" ;;
+    apt:* | apt-repo:*) debian_install "$1" ;;
+    *) macos_install "$1" ;;
+  esac
 }
 
 # Print or apply one manifest group; $1 = plan|apply, $2 = group, $3 = manifest file.
 process_group() {
-  local mode=$1 group=$2 file=$3 name check method
+  local mode=$1 group=$2 file=$3 name check method phase
   while IFS=$'\t' read -r name check method <&3; do
+    if phase=$(deferred_phase "$method"); then
+      if [ "$mode" = plan ]; then printf '  later    %-22s %s\n' "$name" "$(method_label "$method")"
+      else printf 'SKIP %s (%s on this platform)\n' "$name" "$phase"; fi
+      continue
+    fi
     if row_present "$check" "$method"; then
       if [ "$mode" = plan ]; then printf '  present  %s\n' "$name"; else printf 'PRESENT %s\n' "$name"; fi
       continue
@@ -147,15 +185,28 @@ process_group() {
     if [ "$mode" = plan ]; then
       if [ "$method" = os ]; then printf '  missing  %-22s %s\n' "$name" "$(method_label "$method")"
       else printf '  install  %-22s %s\n' "$name" "$(method_label "$method")"; fi
+      debian_plan "$method"
       continue
     fi
-    case "$method" in
-      npm:*) npm_install "${method#npm:}" ;;
-      installer:*) run_installer "${method#installer:}" ;;
-      *) macos_install "$method" ;;
+    install_row "$method"
+    row_present "$check" "$method" || die "$name is still missing after installation"
+  done 3< <(platform_rows "$file" "$group")
+}
+
+# The PATH block in ~/.profile and ~/.zshrc (Linux): $1 = plan|apply|check.
+process_path_block() {
+  local file
+  for file in $PATH_BLOCK_FILES; do
+    if path_block_present "$HOME/$file"; then
+      case "$1" in plan) printf '  present  PATH block in ~/%s\n' "$file" ;; *) printf 'PRESENT PATH block in ~/%s\n' "$file" ;; esac
+      continue
+    fi
+    case "$1" in
+      plan) printf '  add      PATH block in ~/%-11s puts ~/.local/bin on PATH once (marked block)\n' "$file" ;;
+      apply) path_block_add "$HOME/$file" ;;
+      check) printf 'MISSING PATH block in ~/%s\n' "$file"; missing=$((missing + 1)) ;;
     esac
-    is_present "$check" || macos_installed "$method" || die "$name is still missing after installation"
-  done 3< <(manifest_select "$file" "$PLATFORM" "$group")
+  done
 }
 
 # Desired Orca settings for this run, as JSON.
@@ -188,6 +239,8 @@ print_role_plan() {
   local detected
   detected=$(bash "$ORCA_SETUP_ROOT/orca/role.sh" 2>/dev/null | head -n 1) || true
   detected=${detected#ROLE }
+  # On a fresh Linux device the check needs the Node.js that the baseline installs.
+  [ "$detected" != unknown ] || [ "$PLATFORM" != debian ] || have node || detected='unknown until Node.js is installed'
   case "$role" in
     '') info "Pairing role: not chosen (required for --apply); detected: ${detected:-unknown}" ;;
     server) info "Pairing role: server (detected: ${detected:-unknown}); accepts runtime pairings, never saves environments" ;;
@@ -228,6 +281,11 @@ print_orca_plan() {
 
 print_module_plan() {
   local name selected
+  if [ "$PLATFORM" = debian ]; then
+    info 'Optional modules: Linux versions arrive in P3; --apply skips them on Linux.'
+    for name in $MODULES; do printf '  --%s\n' "$name"; done
+    return 0
+  fi
   info 'Optional modules (add to --apply):'
   for name in $MODULES; do
     selected=''
@@ -243,16 +301,12 @@ do_plan() {
   local name
   info 'orca-setup plan (read-only; nothing is changed)'
   info "Device: $(detect_distro) $ARCH, package manager: $(detect_pkg_manager), desktop: $(detect_desktop), Orca CLI: $ORCA_CLI"
-  case "$SUPPORT" in
-    planned)
-      info 'Linux packaging is not implemented in P0 (planned for P1; Orca on Linux in P2): --apply would stop here.'
-      return 0 ;;
-    unsupported)
-      info "This device is not supported (macOS arm64/x86_64; Ubuntu 24.04 / Debian 12 x86_64 planned)."
-      return 0 ;;
-  esac
+  [ "$SUPPORT" = supported ] || die "$(detect_unsupported_reason) --apply refuses this device."
   print_role_plan
-  if have brew; then
+  if [ "$PLATFORM" = debian ]; then
+    if have sudo; then info 'sudo: present; --apply runs only the sudo commands listed below as root'
+    else info 'sudo: missing; --apply needs it for the sudo commands listed below'; fi
+  elif have brew; then
     info 'Homebrew: present'
   else
     info 'Homebrew: missing; install it from https://brew.sh first (--apply stops without it)'
@@ -261,10 +315,20 @@ do_plan() {
   process_group plan baseline baseline.tsv
   info 'Agent CLIs (--apply):'
   process_group plan baseline agents.tsv
-  print_orca_plan
+  if [ "$PLATFORM" = debian ]; then
+    info 'PATH (--apply):'
+    process_path_block plan
+    info 'Pairing role check (--apply): after the baseline install, before any Orca step'
+    info 'Orca (--apply): skipped on Linux until P2 (headless runtime, skills and settings)'
+  else
+    print_orca_plan
+  fi
   print_module_plan
   info 'Authentication (interactive, run on their own):'
-  for name in $AUTHS; do printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; done
+  for name in $AUTHS; do
+    if [ "$PLATFORM" = debian ] && [ "$name" != gh ]; then printf '  --auth-%-8s %s\n' "$name" 'Linux: arrives with Orca on Linux (P2/P3).'
+    else printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; fi
+  done
   info '  --check         Show baseline and authentication readiness, without printing credentials.'
   info 'Existing installations and user configuration are preserved. SSH is never configured.'
 }
@@ -294,19 +358,36 @@ apply_orca() {
   fi
 }
 
-do_apply() {
-  local name role_status
-  [ "$SUPPORT" = supported ] || die "--apply is not implemented for this device in P0 ($(detect_distro) $ARCH)."
-  have brew || die 'Install Homebrew first: https://brew.sh'
-  role_status=0
+# The pairing role only matters to Orca, so it is checked after the baseline (which brings Node.js to a fresh
+# Linux device) and before any Orca step.
+apply_role_check() {
+  local role_status=0
   bash "$ORCA_SETUP_ROOT/orca/role.sh" --expect "$role" || role_status=$?
   case "$role_status" in
     0) ;;
     1) die "this device already holds the other pairing role; remove the pairings listed above before --apply --role $role." ;;
     *) die 'the pairing role cannot be determined (see the reason above); refusing --apply.' ;;
   esac
+}
+
+do_apply() {
+  local name
+  [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
+  if [ "$PLATFORM" = debian ]; then
+    have sudo || die 'sudo is required for the apt steps; install it and add your user to the sudo group.'
+  else
+    have brew || die 'Install Homebrew first: https://brew.sh'
+  fi
   process_group apply baseline baseline.tsv
   process_group apply baseline agents.tsv
+  if [ "$PLATFORM" = debian ]; then process_path_block apply; fi
+  apply_role_check
+  if [ "$PLATFORM" = debian ]; then
+    info 'SKIP Orca: Orca on Linux (headless runtime, skills, settings) arrives in P2'
+    for name in $modules; do info "SKIP module $name: Linux support arrives in P3"; done
+    info 'BASELINE_DONE'
+    return 0
+  fi
   apply_orca
   for name in $modules; do
     info "MODULE $name"
@@ -326,10 +407,11 @@ report() {
 }
 
 check_tools() { # check_tools <manifest> <group>
-  local name check method
+  local name check method phase
   while IFS=$'\t' read -r name check method; do
-    if row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); fi
-  done < <(manifest_select "$1" "$PLATFORM" "$2")
+    if phase=$(deferred_phase "$method"); then printf 'SKIP %s (%s on this platform; not counted)\n' "$name" "$phase"
+    elif row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); fi
+  done < <(platform_rows "$1" "$2")
 }
 
 check_versions() {
@@ -386,17 +468,14 @@ check_role() {
 }
 
 do_check() {
-  [ "$SUPPORT" != unsupported ] || die "unsupported device: $(detect_distro) $ARCH"
+  [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
   info "Device: $(detect_distro) $ARCH, package manager: $(detect_pkg_manager), Orca CLI: $ORCA_CLI"
-  if [ -z "$PLATFORM" ] || [ "$SUPPORT" = planned ]; then
-    info 'Linux checks are not implemented in P0 (planned for P1/P2).'
-    exit 1
-  fi
   check_tools baseline.tsv baseline
   check_tools agents.tsv baseline
+  if [ "$PLATFORM" = debian ]; then process_path_block check; fi
   check_versions
   if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; else report PENDING 'GitHub auth'; fi
-  check_orca
+  if [ "$PLATFORM" = debian ]; then info 'Orca: not checked on Linux until P2 (not counted)'; else check_orca; fi
   check_role
   if have node; then node "$ORCA_SETUP_ROOT/audit/readiness.cjs" || report 'MISSING (audit failed)' 'Readiness audit'; fi
   info "MISSING_ITEMS $missing"
@@ -408,7 +487,10 @@ do_check() {
 
 do_auth() {
   local name
-  [ "$SUPPORT" = supported ] || die "--auth-* is not implemented for this device in P0 ($(detect_distro) $ARCH)."
+  [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
+  if [ "$PLATFORM" = debian ]; then
+    for name in $auths; do [ "$name" = gh ] || die "--auth-$name on Linux arrives with Orca on Linux (P2/P3); only --auth-gh works in P1."; done
+  fi
   for name in $auths; do "auth_${name}"; done
 }
 

@@ -96,3 +96,43 @@ esac'
 }
 
 run_setup() { run "$REAL_BASH" "$REPO_ROOT/setup.sh" "$@"; }
+
+# fake_baseline_present: every baseline tool and agent check command exists (real node stays in place).
+fake_baseline_present() {
+  local check alt
+  while IFS= read -r check; do
+    alt=${check%%|*}
+    case "$alt" in - | app:*) continue ;; esac
+    [ -e "$SB/bin/$alt" ] || fake_present "$alt"
+  done < <(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $3 == "baseline" { print $2 }' \
+    "$REPO_ROOT/manifest/baseline.tsv" "$REPO_ROOT/manifest/agents.tsv")
+}
+
+# fake_linux [ID VERSION_ID ID_LIKE ARCH]: Ubuntu 24.04 x86_64 by default. apt state lives in the sandbox:
+# keyrings and source lists under $SB/apt, installed packages in $FAKE_DPKG. The fake sudo logs every call
+# and records `apt-get install` packages as installed; it never runs anything.
+fake_linux() {
+  fake_uname Linux "${4:-x86_64}"
+  fake_os_release "${1:-ubuntu}" "${2:-24.04}" "${3-debian}"
+  export ORCA_SETUP_APT_KEYRINGS_DIR=$SB/apt/keyrings ORCA_SETUP_APT_SOURCES_DIR=$SB/apt/sources.list.d
+  export FAKE_DPKG=$SB/dpkg-installed
+  : >"$FAKE_DPKG"
+  # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
+  fake_cmd dpkg-query 'for p; do :; done; grep -qxF -- "$p" "$FAKE_DPKG" && printf "install ok installed"'
+  # shellcheck disable=SC2016
+  fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"; case "$*" in *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;; esac'
+}
+
+# fake_gpg: `gpg --show-keys` lists the fingerprints written in a fake key file ("FAKEKEY <fpr> ..."), and
+# fails on anything else; `--dearmor` copies the input.
+fake_gpg() {
+  # shellcheck disable=SC2016
+  fake_cmd gpg '
+for file; do :; done
+case " $* " in
+  *" --dearmor "*) out=""; prev=""; for a; do [ "$prev" = --output ] && out=$a; prev=$a; done; cat "$file" >"$out"; exit 0 ;;
+esac
+read -r magic fprs <"$file" || true
+[ "$magic" = FAKEKEY ] || exit 2
+for fpr in $fprs; do printf "pub:-:4096:1:%s:0:::-:::scESC::::::23::0:\nfpr:::::::::%s:\nsub:-:4096:1:0:0:::::e\nfpr:::::::::SUB%s:\n" "${fpr: -16}" "$fpr" "$fpr"; done'
+}

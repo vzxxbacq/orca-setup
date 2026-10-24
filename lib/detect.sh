@@ -84,22 +84,26 @@ detect_desktop() {
   esac
 }
 
-# supported | planned | unsupported: whether this phase can --apply on the device.
+# supported | unsupported: whether setup.sh can provision the device.
 detect_support() {
-  local os arch distro
-  os=$(detect_os)
+  if [ -z "$(detect_unsupported_reason)" ]; then echo supported; else echo unsupported; fi
+}
+
+# Why the device cannot be provisioned; empty when it can. Linux is Ubuntu 24.04 / Debian 12 on x86_64 only.
+detect_unsupported_reason() {
+  local arch distro
   arch=$(detect_arch)
-  case "$os" in
+  case "$(detect_os)" in
     macos)
-      case "$arch" in arm64 | x86_64) echo supported ;; *) echo unsupported ;; esac ;;
+      case "$arch" in arm64 | x86_64) ;; *) echo "macOS on $arch is not supported (arm64 and x86_64 only)." ;; esac ;;
     linux)
       distro=$(detect_distro)
-      if [ "$arch" = x86_64 ] && { [ "$distro" = 'ubuntu 24.04' ] || [ "$distro" = 'debian 12' ]; }; then
-        echo planned
-      else
-        echo unsupported
+      if [ "$arch" != x86_64 ]; then
+        echo "Linux on $arch is not supported: x86_64 only (no arm64)."
+      elif [ "$distro" != 'ubuntu 24.04' ] && [ "$distro" != 'debian 12' ]; then
+        echo "$distro is not supported: only Ubuntu 24.04 and Debian 12 (x86_64)."
       fi ;;
-    *) echo unsupported ;;
+    *) echo "$(uname -s) is not supported (macOS, or Ubuntu 24.04 / Debian 12 on x86_64)." ;;
   esac
 }
 
