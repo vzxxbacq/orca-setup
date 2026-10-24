@@ -82,9 +82,18 @@ shared_library_present() {
   "$ldconfig" -p 2>/dev/null | awk -v name="$1" '$1 == name { found = 1 } END { exit !found }'
 }
 
-# Shell startup files that get the PATH block (Linux): login shells read ~/.profile, zsh reads ~/.zshrc.
-# shellcheck disable=SC2034 # used by setup.sh
+# Shell startup files that get the PATH block (Linux): login shells read ~/.profile, zsh reads ~/.zshrc. A bash
+# login shell reads ~/.bash_profile or ~/.bash_login instead of ~/.profile when one exists, so an existing one gets
+# the block too (it is never created).
 PATH_BLOCK_FILES='.profile .zshrc'
+path_block_files() {
+  local file
+  # shellcheck disable=SC2086 # a space-separated list
+  printf '%s\n' $PATH_BLOCK_FILES
+  for file in .bash_profile .bash_login; do
+    [ ! -e "$HOME/$file" ] || printf '%s\n' "$file"
+  done
+}
 PATH_BLOCK_BEGIN='# >>> orca-setup PATH >>>'
 PATH_BLOCK_END='# <<< orca-setup PATH <<<'
 

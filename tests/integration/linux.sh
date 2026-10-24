@@ -38,7 +38,8 @@ state() {
   # A running orca-ide serve writes its own orca and orca-ide shims into ~/.local/bin (upstream, not setup.sh).
   find /etc/apt/keyrings /etc/apt/sources.list.d "$HOME/.local/bin" -maxdepth 1 -print 2>/dev/null |
     grep -vxF -e "$HOME/.local/bin/orca" -e "$HOME/.local/bin/orca-ide" | sort
-  sha256sum /etc/apt/keyrings/* /etc/apt/sources.list.d/* "$HOME/.profile" "$HOME/.zshrc" "$unit" 2>/dev/null || true
+  sha256sum /etc/apt/keyrings/* /etc/apt/sources.list.d/* "$HOME/.profile" "$HOME/.zshrc" "$HOME/.bash_profile" "$unit" \
+    2>/dev/null || true
   ls /var/lib/systemd/linger 2>/dev/null || true
 }
 
@@ -69,6 +70,8 @@ fi
 diff -u "$work/state-1" "$work/state-2" || fail 'the second --apply changed the system'
 [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.profile")" -eq 1 ] || fail 'the PATH block must appear once in .profile'
 [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.zshrc")" -eq 1 ] || fail 'the PATH block must appear once in .zshrc'
+[ ! -e "$HOME/.bash_profile" ] || [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.bash_profile")" -eq 1 ] ||
+  fail 'the PATH block must appear once in an existing .bash_profile'
 
 echo '::group::login shell PATH'
 # The system PATH a login gets from /etc/environment; the runner keeps its preinstalled Node.js in /usr/local/bin.

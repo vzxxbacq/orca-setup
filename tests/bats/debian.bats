@@ -286,3 +286,16 @@ apply_ready() {
   fake_cmd apt-cache 'exit 100'
   [ "$(apt_pick 'libasound2t64|libasound2')" = libasound2t64 ]
 }
+
+@test "an existing ~/.bash_profile gets the PATH block too; it is never created" {
+  . "$REPO_ROOT/lib/common.sh"
+  [ "$(path_block_files | paste -sd ' ' -)" = '.profile .zshrc' ]
+  printf 'source ~/.bashrc\n' >"$HOME/.bash_profile"
+  [ "$(path_block_files | paste -sd ' ' -)" = '.profile .zshrc .bash_profile' ]
+  apply_ready
+  run_setup --apply --role client
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.bash_profile")" -eq 1 ]
+  [ "$(head -n 1 "$HOME/.bash_profile")" = 'source ~/.bashrc' ]
+  [ ! -e "$HOME/.bash_login" ]
+}

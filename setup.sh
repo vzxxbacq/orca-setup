@@ -213,7 +213,7 @@ process_group() {
 # The PATH block in ~/.profile and ~/.zshrc (Linux): $1 = plan|apply|check.
 process_path_block() {
   local file
-  for file in $PATH_BLOCK_FILES; do
+  for file in $(path_block_files); do
     if path_block_present "$HOME/$file"; then
       case "$1" in plan) printf '  present  PATH block in ~/%s\n' "$file" ;; *) printf 'PRESENT PATH block in ~/%s\n' "$file" ;; esac
       continue
