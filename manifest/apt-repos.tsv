@@ -7,7 +7,12 @@
 #   keyring       file name under /etc/apt/keyrings/ (signed-by=)
 #   list          file name under /etc/apt/sources.list.d/
 #   uri suite components   the apt source; the architecture is always amd64 (README section 1)
+# {distro} and {codename} in a URL or the suite stand for this device's os-release ID and release code name
+# (ubuntu/noble, debian/bookworm).
 # File names and source lines follow each vendor's own instructions, so a repository set up by hand is recognized.
 
 gh	https://cli.github.com/packages/githubcli-archive-keyring.gpg	2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325	githubcli-archive-keyring.gpg	github-cli.list	https://cli.github.com/packages	stable	main
 nodesource	https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key	6F71F525282841EEDAF851B42F59B5F99B1BE0B4	nodesource.gpg	nodesource.list	https://deb.nodesource.com/node_24.x	nodistro	main
+# Docker's key is the one its install guides have always used ("Docker Release (CE deb)"); the fingerprint was
+# printed in docs.docker.com's Ubuntu and Debian guides (docker/docs, engine/install/{ubuntu,debian}.md).
+docker	https://download.docker.com/linux/{distro}/gpg	9DC858229FC7DD38854AE2D88D81803C0EBFCD88	docker.gpg	docker.list	https://download.docker.com/linux/{distro}	{codename}	stable

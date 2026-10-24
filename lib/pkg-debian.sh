@@ -8,6 +8,7 @@ APT_SOURCES_DIR=${ORCA_SETUP_APT_SOURCES_DIR:-/etc/apt/sources.list.d}
 DEBIAN_MODE=apply # plan: print root commands instead of running them
 GITHUB_API=${ORCA_SETUP_GITHUB_API:-https://api.github.com}
 APT_UPDATED=no
+PLANNED_REPOS='' # repositories whose setup --plan already printed
 
 as_root() {
   if [ "$DEBIAN_MODE" = plan ]; then
@@ -105,28 +106,49 @@ key_matches() {
   done <<<"$fingerprints"
 }
 
-# apt_repo_row <repo>: the apt-repos.tsv row for one repository.
+# apt_repo_row <repo>: the apt-repos.tsv row for one repository, with {distro} and {codename} replaced by this
+# device's os-release ID and release code name (Docker publishes one repository per distribution and release).
 apt_repo_row() {
-  local row
+  local row codename
   row=$(manifest_rows apt-repos.tsv | awk -F'\t' -v repo="$1" '$1 == repo')
   [ -n "$row" ] || die "no apt repository named $1 in manifest/apt-repos.tsv"
+  case "$row" in
+    *'{codename}'*)
+      codename=$(os_release_field UBUNTU_CODENAME)
+      [ -n "$codename" ] || codename=$(os_release_field VERSION_CODENAME)
+      [ -n "$codename" ] || die "the $1 repository needs the release code name, which /etc/os-release does not name."
+      row=${row//\{codename\}/$codename} ;;
+  esac
+  row=${row//\{distro\}/$(os_release_field ID)}
   printf '%s\n' "$row"
 }
 
 apt_repo_uri() { apt_repo_row "$1" | cut -f6; }
 
+# apt_repo_configured <repo>: the repository's keyring verifies against the manifest and its source list is the
+# one debian_add_repo writes.
+apt_repo_configured() {
+  local repo key_url fingerprints keyring list uri suite components keyring_path
+  IFS=$'\t' read -r repo key_url fingerprints keyring list uri suite components <<<"$(apt_repo_row "$1")"
+  keyring_path=$APT_KEYRINGS_DIR/$keyring
+  [ -r "$keyring_path" ] &&
+    [ "$(cat "$APT_SOURCES_DIR/$list" 2>/dev/null)" = "deb [arch=amd64 signed-by=$keyring_path] $uri $suite $components" ] &&
+    key_matches "$keyring_path" "$fingerprints"
+}
+
 # debian_add_repo <repo>: trust the repository's signing key (only after its fingerprints match the manifest)
 # and add its source list. Nothing happens when the keyring verifies and the source list is already in place.
 debian_add_repo() {
   local repo key_url fingerprints keyring list uri suite components keyring_path list_path line stage key source
+  apt_repo_configured "$1" && return 0
   IFS=$'\t' read -r repo key_url fingerprints keyring list uri suite components <<<"$(apt_repo_row "$1")"
   keyring_path=$APT_KEYRINGS_DIR/$keyring
   list_path=$APT_SOURCES_DIR/$list
   line="deb [arch=amd64 signed-by=$keyring_path] $uri $suite $components"
-  if [ -r "$keyring_path" ] && [ "$(cat "$list_path" 2>/dev/null)" = "$line" ] && key_matches "$keyring_path" "$fingerprints"; then
-    return 0
-  fi
   if [ "$DEBIAN_MODE" = plan ]; then
+    # Several packages may share one repository; its setup is printed once.
+    case " $PLANNED_REPOS " in *" $repo "*) return 0 ;; esac
+    PLANNED_REPOS="$PLANNED_REPOS $repo"
     info "           download $key_url, require fingerprint(s) $fingerprints"
     key='<verified key>'
     source='<source list>'
@@ -155,12 +177,34 @@ debian_add_repo() {
   [ -z "${stage:-}" ] || rm -rf -- "$stage"
 }
 
+# github_release_fetch <owner/repo> <asset regex> <asset label> <stage>: download the one asset matching the regex
+# from the latest stable GitHub release of <owner/repo> (never a draft or prerelease) into <stage>, and verify it
+# against the sha256 digest GitHub records for that asset. Sets RELEASE_TAG and RELEASE_NAME; dies on any mismatch.
+github_release_fetch() {
+  local repo=$1 pattern=$2 label=$3 stage=$4 asset url digest
+  have node || die "node is required to read the $repo release."
+  have sha256sum || die "sha256sum is required to verify $label."
+  step curl -q -fLsS --connect-timeout 10 --max-time 60 -H 'Accept: application/vnd.github+json' \
+    "$GITHUB_API/repos/$repo/releases/latest" -o "$stage/release.json" || die "could not read the latest $repo release."
+  asset=$(node "$ORCA_SETUP_ROOT/lib/json.cjs" release-asset "$pattern" <"$stage/release.json") ||
+    die "the latest $repo release has no single $label."
+  IFS=$'\t' read -r RELEASE_TAG RELEASE_NAME url digest <<<"$asset"
+  case "$url" in "https://github.com/$repo/releases/download/$RELEASE_TAG/$RELEASE_NAME") ;; *) die "unexpected download URL for $RELEASE_NAME: $url" ;; esac
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "GitHub records no sha256 digest for $RELEASE_NAME; refusing to install an unverified package (install it by hand from https://github.com/$repo/releases)."
+  info "$repo $RELEASE_TAG: $RELEASE_NAME"
+  step curl -q -fLsS --connect-timeout 10 --max-time 900 "$url" -o "$stage/$RELEASE_NAME" || die "could not download $RELEASE_NAME."
+  printf '%s  %s\n' "${digest#sha256:}" "$stage/$RELEASE_NAME" | sha256sum -c --status ||
+    die "$RELEASE_NAME does not match the sha256 digest GitHub records for it; refusing to install it."
+  info "verified $RELEASE_NAME (sha256 ${digest#sha256:})"
+}
+
 # github_deb_install <owner/repo> <package>: install <package>_<version>_amd64.deb from the latest stable GitHub
-# release of <owner/repo> (never a draft or prerelease). The download must match the sha256 digest GitHub
-# records for the release asset, and its control fields must name <package> for amd64; then apt installs it
-# from the local file and resolves its dependencies. Nothing is installed when any check fails.
+# release of <owner/repo>. The download must match the sha256 digest GitHub records for the release asset, and its
+# control fields must name <package> for amd64; then apt installs it from the local file and resolves its
+# dependencies. Nothing is installed when any check fails.
 github_deb_install() {
-  local repo=$1 package=$2 stage asset tag name url digest
+  local repo=$1 package=$2 stage name
   if [ "$DEBIAN_MODE" = plan ]; then
     info "           resolve the latest stable release of $repo with the GitHub API; download ${package}_<version>_amd64.deb"
     info "           require the sha256 digest GitHub records for that asset, and Package: $package, Architecture: amd64"
@@ -172,27 +216,48 @@ github_deb_install() {
   stage=$(mktemp -d "${TMPDIR:-/tmp}/orca-setup.XXXXXX")
   # shellcheck disable=SC2064 # expand $stage now; the trap only cleans up after a failure below
   trap "rm -rf -- '$stage'" EXIT
-  step curl -q -fLsS --connect-timeout 10 --max-time 60 -H 'Accept: application/vnd.github+json' \
-    "$GITHUB_API/repos/$repo/releases/latest" -o "$stage/release.json" || die "could not read the latest $repo release."
-  asset=$(node "$ORCA_SETUP_ROOT/lib/json.cjs" release-asset "^${package}_[0-9][^_/]*_amd64[.]deb\$" <"$stage/release.json") ||
-    die "the latest $repo release has no single ${package}_<version>_amd64.deb."
-  IFS=$'\t' read -r tag name url digest <<<"$asset"
-  case "$url" in "https://github.com/$repo/releases/download/$tag/$name") ;; *) die "unexpected download URL for $name: $url" ;; esac
-  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
-    die "GitHub records no sha256 digest for $name; refusing to install an unverified package (install it by hand from https://github.com/$repo/releases)."
-  info "$repo $tag: $name"
-  step curl -q -fLsS --connect-timeout 10 --max-time 900 "$url" -o "$stage/$name" || die "could not download $name."
-  printf '%s  %s\n' "${digest#sha256:}" "$stage/$name" | sha256sum -c --status ||
-    die "$name does not match the sha256 digest GitHub records for it; refusing to install it."
+  github_release_fetch "$repo" "^${package}_[0-9][^_/]*_amd64[.]deb\$" "${package}_<version>_amd64.deb" "$stage"
+  name=$RELEASE_NAME
   { [ "$(dpkg-deb -f "$stage/$name" Package)" = "$package" ] && [ "$(dpkg-deb -f "$stage/$name" Architecture)" = amd64 ]; } ||
     die "$name is not the $package package for amd64; refusing to install it."
-  info "verified $name (sha256 ${digest#sha256:})"
   # apt reads local packages as its unprivileged _apt user; setup.sh's umask 077 would hide the file from it.
   chmod 0755 "$stage"
   chmod 0644 "$stage/$name"
   apt_install "$stage/$name"
   rm -rf -- "$stage"
   trap - EXIT
+}
+
+# github_binary_install <owner/repo> <asset> <command>: install the single-file binary <asset> from the latest
+# stable GitHub release of <owner/repo> as ~/.local/bin/<command>, after it matches the sha256 digest GitHub records
+# for it. User-level: no sudo. Nothing is written to ~/.local/bin when a check fails.
+github_binary_install() {
+  local repo=$1 asset=$2 command=$3 stage bin_dir=$HOME/.local/bin
+  if [ "$DEBIAN_MODE" = plan ]; then
+    info "           resolve the latest stable release of $repo with the GitHub API; download $asset"
+    info "           require the sha256 digest GitHub records for that asset, then install it as ~/.local/bin/$command"
+    return 0
+  fi
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/orca-setup.XXXXXX")
+  # shellcheck disable=SC2064 # expand $stage now; the trap only cleans up after a failure below
+  trap "rm -rf -- '$stage'" EXIT
+  github_release_fetch "$repo" "^${asset//./[.]}\$" "$asset" "$stage"
+  mkdir -p "$bin_dir"
+  chmod 0755 "$stage/$asset"
+  step cp "$stage/$asset" "$bin_dir/$command"
+  rm -rf -- "$stage"
+  trap - EXIT
+}
+
+# debian_conflicts <repo>: the installed packages that apt-conflicts.tsv lists for a repository (another source's
+# install of the same software, which --apply never replaces), space-separated; empty when there are none.
+debian_conflicts() {
+  local packages package found=''
+  packages=$(manifest_rows apt-conflicts.tsv | awk -F'\t' -v repo="$1" '$1 == repo { print $2 }')
+  for package in $packages; do
+    ! debian_installed "apt:$package" || found="$found $package"
+  done
+  printf '%s\n' "${found# }"
 }
 
 # debian_install <method>: install one missing apt package (with its repository first, when it needs one).
@@ -211,11 +276,15 @@ debian_install() {
     orca-deb:*)
       spec=${1#orca-deb:}
       github_deb_install "${spec%:*}" "${spec##*:}" ;;
+    github-release:*)
+      # <owner/repo>:<asset>:<command>
+      spec=${1#github-release:}
+      github_binary_install "${spec%%:*}" "$(printf '%s' "$spec" | cut -d: -f2)" "${spec##*:}" ;;
     *) die "unknown Debian install method: $1" ;;
   esac
 }
 
 # debian_plan <method>: print the root commands debian_install would run.
 debian_plan() {
-  case "$1" in apt:* | apt-repo:* | orca-deb:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
+  case "$1" in apt:* | apt-repo:* | orca-deb:* | github-release:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
 }
