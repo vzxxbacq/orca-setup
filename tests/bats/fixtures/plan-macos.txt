@@ -42,6 +42,7 @@ Optional modules (add to --apply):
   --android       Install Android platform tools if missing.
   --media         Install PDF/media processing helpers if missing.
   --agent-gemini  Install the Gemini CLI if missing (optional; not usable with personal accounts).
+  --gpu           Linux only: NVIDIA GPU detection; skipped on macOS with a notice.
 Authentication (interactive, run on their own):
   --auth-gh       GitHub browser authentication, retaining an existing valid login.
   --auth-codex    Add a Codex account to this host's Orca using device authentication.

@@ -71,6 +71,7 @@ Optional modules (add to --apply):
   --android       Install Android platform tools if missing.
   --media         Install PDF/media processing helpers if missing.
   --agent-gemini  Install the Gemini CLI if missing (optional; not usable with personal accounts).
+  --gpu           Report the NVIDIA GPU, driver, nvidia-smi and CUDA toolkit (detection only; never installs).
 Authentication (interactive, run on their own):
   --auth-gh       GitHub device-code login: open https://github.com/login/device on any device and enter the code gh shows; an existing valid login is kept.
   --auth-codex    Add a Codex account to this host's Orca using device authentication.
