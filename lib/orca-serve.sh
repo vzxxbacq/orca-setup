@@ -67,11 +67,14 @@ serve_env_lines() {
   ' "$base" "$overlay")
 }
 
-# serve_command: absolute path of the Orca CLI the unit starts (the .deb's /usr/bin/orca-ide once installed).
+# serve_command: absolute path of the Orca CLI the unit starts: the .deb's /usr/bin/orca-ide (a link that survives
+# upgrades), else the CLI found on PATH. Never a shim that a running server writes into ~/.local/bin, which would
+# change the unit between runs. ORCA_SETUP_DEB_CLI overrides the .deb path (tests).
 serve_command() {
-  local path
+  local deb=${ORCA_SETUP_DEB_CLI:-/usr/bin/orca-ide} path
+  if [ -z "${ORCA_CLI_COMMAND:-}" ] && [ -x "$deb" ]; then printf '%s\n' "$deb"; return; fi
   path=$(command -v "$ORCA_CLI" 2>/dev/null) || path=''
-  case "$path" in /*) printf '%s\n' "$path" ;; *) echo /usr/bin/orca-ide ;; esac
+  case "$path" in /*) printf '%s\n' "$path" ;; *) printf '%s\n' "$deb" ;; esac
 }
 
 # serve_unit_render <command> <pairing-address>: the unit file content.

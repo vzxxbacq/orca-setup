@@ -25,6 +25,8 @@ apply_ready() {
   local name
   for name in npm pnpm python3.12 uv ruff codex claude dsh dsh-tui pi bun omp grok agy; do fake_present "$name"; done
   fake_orca_linux
+  fake_library libgbm.so.1
+  fake_library libasound.so.2
   fake_gpg
   # shellcheck disable=SC2016 # expanded by the stub
   fake_cmd curl 'out=""; prev=""; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done; echo "FAKEKEY ${FAKE_KEY_FPRS//,/ }" >"$out"'
@@ -48,6 +50,7 @@ apply_ready() {
   [[ "$output" == *'sudo: present; --apply runs only the sudo commands listed below as root'* ]]
   # One apt-get update before the first package, one after each repository is added.
   [ "$(grep -c 'sudo env DEBIAN_FRONTEND=noninteractive apt-get update' <<<"$output")" -eq 3 ]
+  [[ "$output" == *'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgbm1'* ]]
   [[ "$output" == *'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates'* ]]
   [[ "$output" == *"sudo install -m 0644 <verified key> $SB/apt/keyrings/nodesource.gpg"* ]]
   [[ "$output" == *"deb [arch=amd64 signed-by=$SB/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"* ]]

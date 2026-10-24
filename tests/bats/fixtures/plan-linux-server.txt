@@ -15,6 +15,8 @@ Baseline tools (--apply):
   present  unzip
   present  ca-certificates
   present  gnupg
+  present  libgbm
+  present  libasound
   present  gh
   present  node
   present  uv

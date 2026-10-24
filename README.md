@@ -1,6 +1,7 @@
 # orca-setup — PLAN
 
-> Status: **P0 (macOS parity) and P1 (Linux baseline) implemented**; Orca itself on Linux is P2.
+> Status: **P0 (macOS parity), P1 (Linux baseline) and P2 (Orca on Linux) implemented**; P2's pairing acceptance on a
+> real Linux machine is pending (§6).
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -14,6 +15,7 @@
 ./setup.sh                          # same as --plan: print what would happen on this device, change nothing
 ./setup.sh --check                  # read-only readiness report; exit code = number of missing items
 ./setup.sh --apply --role server    # install what is missing, Orca skills and defaults (role is required)
+./setup.sh --apply --role server --pairing-address <ip-or-host>   # Linux server: also the orca-serve user unit
 ./setup.sh --apply --role server --power --media      # plus optional modules
 ./setup.sh --apply --role client --task-source linear # plus Linear as Orca's task source (opt-in)
 ./setup.sh --auth-gh                # interactive logins, one or more per run: gh codex claude agy linear
@@ -23,11 +25,14 @@
   `--apply`; with `--plan` (or no mode) they are shown in detail. They never run on their own.
 - `--auth-*` flags are their own mode and cannot be combined with `--plan`, `--apply` or `--check`.
 - Run as your regular user; `sudo ./setup.sh` is refused. On macOS only `--power` and `--apple` call `sudo`
-  themselves; on Linux the baseline apt steps (packages, repository keys and source lists) also run through `sudo`,
-  and `--plan` prints every one of those commands.
-- On Linux (Ubuntu 24.04 / Debian 12, x86_64; anything else is refused) `--apply` installs the baseline tools and
-  agents and writes the PATH block (§3.1), then skips Orca with a P2 notice; optional modules are skipped until P3
-  and only `--auth-gh` works. `--check` does not count Orca items on Linux until P2.
+  themselves; on Linux the baseline apt steps (packages, repository keys and source lists, the Orca `.deb`) and,
+  for `--role server`, `loginctl enable-linger` also run through `sudo`, and `--plan` prints every one of those commands.
+- On Linux (Ubuntu 24.04 / Debian 12, x86_64; anything else is refused) `--apply` installs the baseline tools,
+  agents and Orca's `.deb`, writes the PATH block (§3.1), and sets up Orca for the role (§3.3.2): a server gets the
+  `orca-serve` systemd user unit and linger, a client gets Orca and its CLI only. Optional modules are skipped until
+  P3; `--auth-gh`, `--auth-codex` and `--auth-claude` work, `--auth-agy` and `--auth-linear` arrive in P3.
+- `--pairing-address` is required for `--apply --role server` on Linux and refused anywhere else (macOS picks the
+  address in Orca's Settings; a client never advertises one).
 
 ---
 
@@ -129,33 +134,95 @@ sign-in works on a headless host is still to be verified (§9).
 
 | Item | macOS | Linux |
 |---|---|---|
-| Orca itself | `/Applications/Orca.app` (desktop; Homebrew cask `stablyai/orca/orca` when missing) | **headless runtime**: the official `.deb` from the latest GitHub release (`orca-ide_<version>_amd64.deb`, installed with `sudo apt install ./<file>`); see §3.3.1 |
+| Orca itself | `/Applications/Orca.app` (desktop; Homebrew cask `stablyai/orca/orca` when missing) | **headless runtime**: the official `.deb` from the latest stable GitHub release (`orca-ide_<version>_amd64.deb`), checked against GitHub's sha256 digest, then installed with `sudo apt-get install <file>`; see §3.3.1 |
 | CLI name | `orca` | `orca` inside the Orca terminal; **outside the Orca terminal you must use `orca-ide`** (bare `orca` is the GNOME screen reader). Scripts resolve it uniformly via `ORCA_CLI_COMMAND` / probing |
-| Always-on | desktop app login item | systemd **user unit**: `orca-ide serve --supervise --port 6768 --pairing-address <LAN/Tailscale IP>` together with `loginctl enable-linger $USER` so it survives logout |
-| Pairing | Settings → Remote Orca Servers → New Link | `orca-ide serve` prints a runtime pairing URL (`--mobile-pairing` for the phone app) |
+| Always-on | desktop app login item | `--role server`: systemd **user unit** `orca-serve.service` running `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`, together with `loginctl enable-linger $USER` so it survives logout (§3.3.2); `--role client`: none |
+| Pairing | Settings → Remote Orca Servers → New Link | the user runs `orca-ide serve` in an interactive terminal while the unit is stopped (§3.3.2); `setup.sh` never creates or prints a pairing link |
 | Accounts | `orca account add --agent claude\|codex` | same, run from the server shell (a remote client cannot add accounts) |
-| Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex`, listed in `manifest/orca-skills.tsv`; skipped when `orca skills installed` already lists them | same, minus `orca-emulator` (the iOS simulator is macOS-only); `computer-use` support on Linux is to be verified |
-| Default settings | written through `orca-rpc settings.update` from `manifest/orca-settings.json`: `defaultTuiAgent=codex`, `agentStatusHooksEnabled=true`; the task source is **opt-in** (`--task-source linear` sets `defaultTaskSource=linear` and `visibleTaskProviders=[linear]`). `--apply` reads `settings.get` first and writes only when a key differs | same |
-| Resource limits (optional) | none | `ORCA_TERMINAL_PROCESS_CEILING` / `ORCA_TERMINAL_MEMORY_MAX` / `ORCA_TERMINAL_MEMORY_SWAP_MAX` in the systemd unit's `Environment=` (needs cgroup v2 and linger) |
+| Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex`, listed in `manifest/orca-skills.tsv`; skipped when `orca skills installed` already lists them | same, minus `orca-emulator` (the iOS simulator is macOS-only). `computer-use` is installed: upstream ships a Linux helper (AT-SPI, `native/computer-use-linux`) and the `.deb` depends on `python3-gi`, `at-spi2-core`, `xdotool` and `xvfb`, but it drives apps in a graphical session, so a headless server has nothing to drive until an app runs on a display |
+| Default settings | written through `orca-rpc settings.update` from `manifest/orca-settings.json`: `defaultTuiAgent=codex`, `agentStatusHooksEnabled=true`; the task source is **opt-in** (`--task-source linear` sets `defaultTaskSource=linear` and `visibleTaskProviders=[linear]`). `--apply` reads `settings.get` first and writes only when a key differs | same, through the `.deb`'s bundled runtime (`/opt/Orca/orca-ide` with `ELECTRON_RUN_AS_NODE`); a server's settings are written once its unit runs; a client without a running Orca skips them with a notice |
+| Resource limits (optional) | none | `ORCA_TERMINAL_PROCESS_CEILING` / `ORCA_TERMINAL_MEMORY_MAX` / `ORCA_TERMINAL_MEMORY_SWAP_MAX` from `manifest/local/orca-serve.env` (git-ignored; keys and formats in `manifest/orca-serve.env`) as `Environment=` lines of the unit (needs cgroup v2 and linger) |
 
 #### 3.3.1 Orca on headless Linux (from the upstream docs)
 
 Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stablyai/orca](https://github.com/stablyai/orca).
 
 - **Package**: each release ships an AppImage, a `.deb` and an `.rpm`. The `.deb` is used here because it puts
-  `orca-ide` on `PATH` (`/usr/bin/orca-ide`) at install time; the AppImage can only register its CLI from the desktop
-  Settings UI, which a headless host does not have. The file name carries the version, so the script resolves it
-  through the GitHub releases API instead of a fixed URL.
+  `orca-ide` on `PATH` (`/usr/bin/orca-ide`, a link to `/opt/Orca/resources/bin/orca-ide`) at install time; the
+  AppImage can only register its CLI from the desktop Settings UI, which a headless host does not have. The file name
+  carries the version, so the script resolves it through the GitHub releases API instead of a fixed URL.
+- **Install** (`--apply`, only when `orca-ide` is missing): read `/repos/stablyai/orca/releases/latest` (GitHub never
+  returns a draft or prerelease there, and the script refuses one anyway), require exactly one
+  `orca-ide_<version>_amd64.deb` asset whose download URL belongs to that release, download it, and require the
+  `sha256:` digest the API records for the asset (computed by GitHub when the asset was uploaded) plus the package's
+  own control fields (`Package: orca-ide`, `Architecture: amd64`). Only then does
+  `sudo apt-get install -y --no-install-recommends <file>` install it and its dependencies (GTK, NSS, AT-SPI, xvfb
+  and others). A release without a digest is refused: there is no signed checksum file or apt repository to fall back
+  to. The digest protects the download, not the release itself: it would not catch a malicious asset uploaded by
+  someone holding the upstream release credentials.
 - **Updates**: the `.deb` does not self-update and there is no apt repository yet (upstream #18086). Orca downloads the
   new package to `~/.cache/orca-updater/pending/` and offers an install command; `setup.sh` never upgrades an existing
   install (ground rule), it only reports the available version in `--check`.
 - **Runtime**: `orca-ide serve` runs on Orca's own Node server (orcad), so no display is needed. A packaged serve writes a
-  bare `orca` shim into `~/.local/bin` as it starts, but the first launch must always use `orca-ide`.
+  bare `orca` shim into `~/.local/bin` as it starts, but the first launch must always use `orca-ide`; the unit starts
+  `/usr/bin/orca-ide`.
+- **Supervision**: `--supervise` is upstream's mode for service managers: it restarts the server with growing delays
+  and gives up (exit 0, so `Restart=on-failure` stops too) after 6 failures in 15 minutes. When its output is not a
+  terminal, as under systemd, upstream also hides any pairing URL from the log. Upstream's own
+  `orca serve service install` writes the same unit name (`orca-serve.service`) with `--no-pairing`; this repository
+  renders its own unit from `orca/systemd/orca-serve.service` so it can add the address, the terminal limits and the
+  user tool directories on `PATH`, and keep re-runs idempotent. `orca-ide serve service status` reports on it.
 - **Network**: bind the pairing address to a private route (Tailscale `100.x`, LAN, WireGuard); never `127.0.0.1` and
   never a port forwarded to the public internet.
 - **Credentials**: integration credentials (Linear etc.) are sealed with a per-machine key in `~/.orca`; GitHub tokens
   stay in `gh`. Nothing for this repository to handle.
 - **Single host mode**: never run `orca-ide serve` next to a desktop app that already shares the same machine.
+
+#### 3.3.2 Linux server and client roles
+
+`--apply --role server --pairing-address <address>` on Linux, after the baseline and the pairing role check:
+
+1. `sudo loginctl enable-linger $USER` when linger is off, so the user's service manager runs without a login.
+2. Renders `orca/systemd/orca-serve.service` into `~/.config/systemd/user/orca-serve.service`
+   (`$XDG_CONFIG_HOME` is honoured) and runs `systemctl --user daemon-reload` when the file is missing or differs.
+   The unit runs `/usr/bin/orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>` with
+   `~/.local/bin` and `~/.grok/bin` on `PATH` (agents installed user-level) and `KillMode=process` (stopping the unit
+   stops the server, while the terminal daemon and its sessions keep running). A unit at that path that
+   `orca-setup` did not write (its first line is not `# orca-setup: ...`) is left unchanged.
+3. `systemctl --user enable` it, start it (or restart it when the file changed), and wait up to 120 s
+   (`ORCA_SETUP_SERVE_WAIT`) until `orca-ide status --json` reports the runtime reachable.
+4. Installs the missing skills and aligns the settings, as on macOS.
+
+A second run with the same arguments prints only `PRESENT` lines. `--pairing-address` is the private IPv4 address or
+host name that clients dial (Tailscale, LAN, WireGuard; §1): loopback (`127.0.0.0/8`, `localhost`), wildcard
+(`0.0.0.0`, `*`, `::`), broadcast and malformed values are refused. IPv6 literals are not accepted; use a host name.
+The CI job on GitHub's runner advertises `127.0.0.2` through the test-only `ORCA_SETUP_TEST_LOOPBACK_PAIRING_ADDRESS=1`
+(never `127.0.0.1`), because the runner has no private route; do not set it on a real device.
+
+`--role client` on Linux installs Orca and its CLI and the skills; it writes no unit, enables no linger, and never
+creates a pairing offer. Settings are aligned only when an Orca runtime already runs on the device.
+
+**Pairing a client with a Linux server.** The pairing URL grants access to the server's runtime, so `setup.sh` never
+creates, captures, prints or logs one, and the unit runs with `--no-pairing`. Upstream has no command or RPC that
+creates a pairing offer for a running server, and a supervised serve hides the URL from its journal, so the user
+creates the link in an interactive terminal on the server (a plain SSH session, not tmux or an Orca terminal whose
+scrollback is kept):
+
+```sh
+systemctl --user stop orca-serve.service        # one Orca per profile: a second serve would refuse to start
+orca-ide serve --port 6768 --pairing-address <address>   # prints "Pairing URL: orca://pair?..."; copy it, then Ctrl-C
+systemctl --user start orca-serve.service
+clear                                            # drop the URL from the terminal
+```
+
+This is upstream's documented way for a service-managed server ("pair clients … with `orca serve` in a terminal while
+the service is stopped"). The offer is stored in the server's device registry, so the restarted unit accepts it. On
+the client, paste it in
+**Settings → Remote Orca Servers → Add Server**, or read it without echo instead of putting it on a command line (the
+shell history would keep it): `read -rs code && orca environment add --name <server> --pairing-code "$code"`.
+`--mobile-pairing` does the same for Orca Mobile. If a link leaks before it is used, generate a new one: that replaces
+the unused link. Do not take the link from the journal: with `--no-pairing` the unit never writes one there, and a
+journal would keep it.
 
 ### 3.4 Authentication (all interactive, run on demand)
 
@@ -188,12 +255,18 @@ Modules are selected on the command line and run only with `--apply`; their pack
 
 - Port `audit-readiness.cjs`: booleans/names only; covers whether env vars exist, auth and MCP names for claude/gemini/dsh/pi/codex, and cloud configs (gcloud/aws/azure/docker/npm).
 - Add: a `PRESENT/MISSING` tool list, versions (node/pnpm/python/uv), Orca runtime reachability, whether the Orca accounts (codex/claude) are selected, whether Linear is connected (only when `--task-source linear` was chosen), whether gh is logged in, the pairing role check (§5.1); on Linux also the systemd user unit state and linger.
-- On Linux in P1, Orca is not checked and not counted (`SKIP orca`, `Orca: not checked on Linux until P2`); the
-  PATH block in `~/.profile` and `~/.zshrc` is checked and counted instead. After `--apply`, the only counted item
-  on a fresh Linux device is the interactive GitHub login.
+- On Linux the PATH block in `~/.profile` and `~/.zshrc` is checked and counted too, and the Orca items depend on the
+  role (`--role`, else server when `~/.config/systemd/user/orca-serve.service` exists, else client):
+  - server: `Orca serve unit` (`active`, else `INACTIVE (<state>)` or `MISSING`), `Linger` (`on`, else `OFF`), the
+    runtime, skills, accounts, settings and the role, all as on macOS;
+  - client: the runtime is reported but not counted (`not running (client; not counted)`), skills are counted, and
+    accounts and settings are checked only when a runtime runs.
+- After `--apply`, the only counted items on a fresh Linux device are interactive logins: the GitHub login, plus the
+  Orca Codex account on a server.
 - Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
-  agents from the manifest, a missing Orca CLI, an unreachable Orca runtime, missing Orca skills, a `PENDING` GitHub
-  login or Codex account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
+  agents from the manifest, a missing Orca CLI, an unreachable Orca runtime (not on a Linux client), missing Orca
+  skills, an inactive or missing serve unit and linger that is off (Linux server), a `PENDING` GitHub login or Codex
+  account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
   other role than `--role`) or an unknown role (unreadable pairing stores). Reported but not counted: versions, the Claude account, Orca settings that differ from the
   manifest, Linear when only Orca's settings select it, and the `READINESS_JSON` audit line.
 
@@ -223,13 +296,15 @@ orca-setup/
 │   ├── manifest.sh              # manifest parsing and local overlay merge
 │   ├── json.cjs                 # JSON helpers for the shell (names/booleans only)
 │   ├── pkg-macos.sh             # brew formulae / casks
-│   ├── pkg-debian.sh            # apt and third-party apt repos (gh, NodeSource; Docker in P3), sudo steps
+│   ├── pkg-debian.sh            # apt, third-party apt repos (gh, NodeSource; Docker in P3), Orca .deb, sudo steps
+│   ├── orca-serve.sh            # Linux server: pairing address, serve unit rendering, linger, systemctl --user
 │   ├── pkg-fedora.sh            # (later) dnf placeholder
 │   └── npm-tools.sh             # npm global tools under ~/.local
 ├── manifest/
 │   ├── baseline.tsv             # tool → per-platform package/install method (single source of truth)
 │   ├── agents.tsv               # agent CLI inventory (baseline / optional, per-platform support)
 │   ├── apt-repos.tsv            # third-party apt repositories and their expected key fingerprints
+│   ├── orca-serve.env           # allowed terminal-limit keys for the serve unit (values go in local/)
 │   ├── orca-skills.tsv          # Orca skills per platform and their install targets
 │   ├── orca-settings.json       # Orca default settings and opt-in task sources
 │   └── local.example/           # placeholder overlay; the real manifest/local/ is git-ignored
@@ -240,13 +315,13 @@ orca-setup/
 │   ├── orca-rpc.cjs             # reuse Orca's bundled RuntimeClient (never exports the pairing key)
 │   ├── role.sh                  # pairing role check (§5.1); picks node or Orca's bundled runtime
 │   ├── role.cjs                 # role logic: reads the pairing stores, never prints secrets
-│   └── systemd/orca-serve.service  # (P2)
+│   └── systemd/orca-serve.service  # template of the Linux server's systemd user unit (§3.3.2)
 ├── audit/readiness.cjs          # read-only audit
 ├── remote/provision.sh          # (P4) push and run from the control machine (§5)
-├── .github/workflows/ci.yml     # static checks + bats on Ubuntu and macOS; Linux integration containers
+├── .github/workflows/ci.yml     # static checks + bats on Ubuntu and macOS; Linux client containers; Linux server VM
 └── tests/
-    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, --plan snapshots, static checks)
-    └── docker/integration.sh    # Linux integration run inside ubuntu:24.04 / debian:12 (amd64) containers
+    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, Orca on Linux, --plan snapshots, static checks)
+    └── integration/linux.sh     # Linux integration: client in ubuntu:24.04 / debian:12 containers, server on the runner VM
 ```
 
 ---
@@ -257,10 +332,11 @@ orca-setup/
 [new device, role: server]                    [control machine, role: client]
 
 0. Install Orca (macOS desktop / Linux headless)
+   Linux: ./setup.sh --apply --role server --pairing-address <address>  (baseline, Orca .deb, serve unit, linger)
 
 1. Generate a pairing code
-   (desktop Settings or `orca serve`)  ──►   orca environment add --name <device> --pairing-code <code>
-                                             orca status --environment <device>
+   (desktop Settings, or on Linux        ──►   orca environment add --name <device> --pairing-code <code>
+   `orca-ide serve` in a terminal, §3.3.2)     orca status --environment <device>
 
 2.                                      ◄──   orca project setup-clone --project <orca-setup project id>
                                                --host runtime:<environment-id> --url https://github.com/vzxxbacq/orca-setup
@@ -276,7 +352,9 @@ orca-setup/
 6.                                      ◄──   orca worktree create --environment <device> --project <x> --agent codex ...
 ```
 
-- Steps 0–1 cannot be done remotely; they must happen locally on the device, so the README will list them as a "manual checklist".
+- Steps 0–1 cannot be done remotely; they must happen locally on the device (on Linux, in an SSH session), so the
+  README will list them as a "manual checklist". On Linux, step 0 runs `setup.sh` from a clone made on the device;
+  step 3 then finds everything in place, and its re-run only prints `PRESENT` lines.
 - The repository is public, so step 2 needs no Git credentials on the device.
 
 ### 5.1 Pairing roles
@@ -291,7 +369,11 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | `server` | no | yes, from its clients |
 
 - `setup.sh --role client|server` is required for `--apply`; `--plan` shows what the role implies.
-- `--role server` never runs `orca environment add`; `--role client` never prints a runtime pairing code.
+- `--role server` never runs `orca environment add`; `--role client` never prints a runtime pairing code. No role
+  makes `setup.sh` print a pairing code: on a Linux server the unit runs with `--no-pairing` and the user creates
+  each link in an interactive terminal (§3.3.2).
+- On Linux the role also decides the Orca setup: a server gets the `orca-serve` user unit and linger, a client gets
+  Orca and its CLI only (§3.3.2).
 - `--apply` refuses to continue when the device already holds the other role (saved environments on a server, or
   runtime clients seen recently on a client) and names the pairings to remove. Mobile pairings do not count. The
   check runs after the baseline install (which brings Node.js to a fresh Linux device) and before any Orca step, so
@@ -317,7 +399,7 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 |---|---|---|
 | **P0 Skeleton + macOS parity** | `setup.sh` entry, `lib/common.sh`, `lib/detect.sh`, `manifest/`, `--role`; port every mode from setup-mini.sh | on the reference Mac, `--plan` output matches setup-mini.sh; `--check` results do not regress |
 | **P1 Linux baseline** | `pkg-debian.sh`, user-level npm/uv installs, PATH written to `~/.profile`/`~/.zshrc` | in Docker, `ubuntu:24.04` and `debian:12` run `--apply` twice successfully (idempotent); `--check` reports only auth items |
-| **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | a real Linux machine / VM can be paired from the control machine with `orca environment add` and can `worktree create --agent codex` remotely |
+| **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | accepted on CI (2026-10-24): containers install the `.deb` as a client; the runner VM runs the server unit with linger, reaches the runtime, re-runs as a no-op and counts only interactive logins. **Pending**: a real Linux x86_64 machine paired from a laptop client with `orca environment add`, then `worktree create --agent codex` remotely |
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | each module has clear `--plan` output on Linux and `--apply` is re-entrant |
 | **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
 
@@ -337,9 +419,20 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - Linux devices other than Ubuntu 24.04 / Debian 12 on x86_64 are refused by `--plan`, `--apply` and `--check`
   with the reason (arm64, or the distribution and release).
 - The pairing role check moved after the baseline install on both platforms (§5.1); it still runs before any Orca step.
-- On Linux, `--apply` skips the Orca section (`SKIP orca`, P2) and optional modules (P3); `--check` does not count
-  Orca items; `--auth-gh` is the only auth mode on Linux.
+- In P1, `--apply` on Linux skipped the Orca section and optional modules (P3), `--check` did not count Orca items,
+  and `--auth-gh` was the only auth mode on Linux. P2 replaced the Orca part (§6.3).
 - A second `--apply` prints only `PRESENT` lines (plus the deferred items and the role report) and runs no step.
+
+### 6.3 P2 notes (Orca on Linux)
+
+- The Orca `.deb` is a baseline row (`orca-deb:stablyai/orca:orca-ide`), installed last and only when `orca-ide` is
+  missing; existing installs are never upgraded (§3.3.1).
+- `--role server` adds linger and the `orca-serve` user unit (§3.3.2) and requires `--pairing-address`; `--role client`
+  installs Orca only. Skills and settings follow on both, as on macOS.
+- `orca/orca-rpc.sh` and `orca/role.sh` find the `.deb` install under `/opt/Orca` (`ORCA_APP_PATH` overrides).
+- `--check` counts the Linux Orca items by role (§3.6); the P1 notice is gone.
+- `--auth-codex` and `--auth-claude` work on Linux (`orca-ide account add` on the server); agy and Linear stay P3.
+- Real-device acceptance is pending (table above): the CI runner cannot be dialed from another machine.
 
 ---
 
@@ -349,14 +442,23 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - **Unit**: bats tests for `detect.sh` (fake `/etc/os-release`, `uname`), manifest parsing, role checks and `--plan` output snapshots.
   Run `bats tests/bats`; every test runs in a sandbox whose `PATH` holds only fakes and a few core utilities. Refresh
   snapshots with `UPDATE_SNAPSHOTS=1 bats tests/bats/plan.bats` and review the diff.
-- **Linux integration**: GitHub Actions container matrix (ubuntu:24.04 / debian:12, amd64; `.github/workflows/ci.yml`).
-  `tests/docker/integration.sh` runs as a non-root user with passwordless sudo: `--apply --role server` twice (the
-  second run must run no step and leave packages, apt sources, keyrings and dotfiles unchanged), a login shell must
-  find the user-level tools, and `--check` must count only the interactive GitHub login. systemd pieces (P2) are
-  verified on a real VM.
+- **Linux integration** (`tests/integration/linux.sh`, `.github/workflows/ci.yml`), as a non-root user with
+  passwordless sudo, in two shapes:
+  - `client` in a container matrix (ubuntu:24.04 / debian:12, amd64; no systemd): `--apply --role client` twice (the
+    second run must run no step and leave packages, apt sources, keyrings and dotfiles unchanged), a login shell must
+    find the user-level tools and `orca-ide`, the `.deb` must be installed and `orca-ide` must run, the skills must be
+    installed, no unit may be written, the rendered unit must pass `systemd-analyze verify`, and `--check` must count
+    only the interactive GitHub login;
+  - `server` directly on GitHub's Ubuntu 24.04 runner VM (systemd), as the runner user:
+    `--apply --role server --pairing-address 127.0.0.2` (test-only override, §3.3.2) twice; the unit must be enabled
+    and active, linger on, the unit must pass `systemd-analyze --user verify`, `orca-ide status --json` must report the
+    runtime reachable, neither the setup output, the status reply nor the unit's journal may contain a pairing URL,
+    and `--check` must count only the GitHub login and the Orca Codex account.
+  Pairing from another machine is verified on real hardware (§6).
 - **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`.
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
+  The bats fake of `orca-ide status` carries a pairing URL, and every Linux Orca test asserts it never reaches the output.
 
 ---
 
@@ -366,7 +468,9 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 |---|---|
 | `orca-rpc.cjs` depends on Orca internals (`out/cli/runtime-client.js`) and RPC method names (`settings.update`, `accounts.list`, `linear.status`, `files.writeBase64`), which may change between versions | use the public CLI wherever possible; keep all RPC calls under `orca/`; `--check` fails loudly instead of silently when a probe fails |
 | On Linux, `orca` collides with the GNOME screen reader | `detect.sh` resolves the CLI name in one place; scripts must never hardcode `orca` |
-| Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported |
+| Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported (`computer-use` has an upstream Linux helper and stays installed, §3.3) |
+| A pairing URL leaks through logs or scrollback | the unit runs with `--no-pairing`; `setup.sh` never asks for an offer; the user creates links in an interactive terminal (§3.3.2); tests assert no pairing URL in any output or journal |
+| The `.deb` download is tampered with | GitHub's per-asset sha256 digest and the package's control fields are checked before `apt-get` sees the file; no digest, no install (§3.3.1) |
 | Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine |
 | GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification |
 | No public CLI lists the runtime clients paired with a host, so `orca/role.sh` reads Orca's device registry file | read only scope/name/last-seen; never print tokens; fail closed (`ROLE unknown`) when the file does not parse or has an unexpected shape; covered by bats tests with fake registries; switch to a CLI once one exists |
@@ -395,11 +499,18 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Fedora/RHEL | not now; `pkg-fedora.sh` is kept as a placeholder |
 | Agent install source | npm whenever a package exists (§3.2); grok and agy use their official installers |
 | Orca on Linux | official `.deb` from GitHub releases, run as `orca-ide serve --supervise` under a systemd user unit (§3.3.1) |
+| Linux server address | `--pairing-address <ip-or-host>` is required for `--apply --role server`; loopback and wildcards are refused |
+| Pairing link on a Linux server | never handled by `setup.sh`; the unit runs with `--no-pairing` and the user runs `orca-ide serve` in a terminal while the unit is stopped (§3.3.2) |
+| P2 acceptance | accepted on CI; pairing from a laptop client to a real Linux x86_64 machine is pending (§6) |
+| `computer-use` on Linux | installed: upstream ships a Linux AT-SPI helper; it needs a graphical session to drive apps (§3.3) |
 
 **Open**
 
-1. **Linux support** of `computer-use`, and agy's interactive sign-in on a headless host: to be verified on a real
-   machine in P2. (agy's installer itself supports Linux x86_64 and is part of the P1 baseline.)
+1. agy's interactive sign-in on a headless host: to be verified on a real machine (P3). (agy's installer itself
+   supports Linux x86_64 and is part of the P1 baseline.)
+2. P2 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
+   `--apply --role server`, then `orca worktree create --environment <server> --agent codex` from the client; also
+   check whether `computer-use` can drive an app under Xvfb on a headless server.
 
 ---
 

@@ -25,6 +25,7 @@ make_sandbox() {
   export SB HOME=$SB/home
   export PATH=$SB/bin
   export ORCA_SETUP_BREW_PREFIX=$SB/brew
+  export ORCA_SETUP_DEB_CLI=$SB/no-deb-cli
   export ORCA_SETUP_APPLICATIONS_DIR=$SB/Applications
   export ORCA_USER_DATA=$SB/userdata
   export FAKE_LOG=$SB/fake.log
@@ -105,7 +106,10 @@ fake_baseline_present() {
   local check alt
   while IFS= read -r check; do
     alt=${check%%|*}
-    case "$alt" in - | app:*) continue ;; esac
+    case "$alt" in
+      - | app:*) continue ;;
+      lib:*) fake_library "${alt#lib:}"; continue ;;
+    esac
     [ -e "$SB/bin/$alt" ] || fake_present "$alt"
   done < <(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $3 == "baseline" { print $2 }' \
     "$REPO_ROOT/manifest/baseline.tsv" "$REPO_ROOT/manifest/agents.tsv")
@@ -128,6 +132,10 @@ case "$*" in
   *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;;
   *"loginctl enable-linger"*) echo yes >"$SB/linger" ;;
 esac'
+  # The dynamic linker cache starts empty; fake_library adds to it.
+  # shellcheck disable=SC2016
+  fake_cmd ldconfig '[ "$1" = -p ] && cat "$SB/ldconfig" 2>/dev/null'
+  : >"$SB/ldconfig"
   # A regular user with a fixed name, so snapshots do not depend on who runs the tests.
   # shellcheck disable=SC2016
   fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; *) echo "uid=1000(builder)" ;; esac'
@@ -180,6 +188,11 @@ case "$1" in
   start | restart) echo "systemctl --user $*" >>"$FAKE_LOG"; touch "$SB/runtime-up" ;;
   *) echo "systemctl --user $*" >>"$FAKE_LOG" ;;
 esac'
+}
+
+# fake_library <soname>: the fake `ldconfig -p` (installed by fake_linux) lists the library.
+fake_library() {
+  printf '\t%s (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/%s\n' "$1" "$1" >>"$SB/ldconfig"
 }
 
 # fake_gpg: `gpg --show-keys` lists the fingerprints written in a fake key file ("FAKEKEY <fpr> ..."), and

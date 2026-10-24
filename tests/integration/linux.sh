@@ -50,12 +50,16 @@ echo '::group::first --apply'
 echo '::endgroup::'
 grep -qx BASELINE_DONE "$work/first.log" || fail 'first --apply did not finish'
 state >"$work/state-1"
+[ ! -e "$unit" ] || cp "$unit" "$work/unit-1"
 
 echo '::group::second --apply'
 "$repo/setup.sh" "${args[@]}" 2>&1 | tee "$work/second.log"
 echo '::endgroup::'
 state >"$work/state-2"
-if grep -n '^+ ' "$work/second.log"; then fail 'the second --apply ran steps'; fi
+if grep -n '^+ ' "$work/second.log"; then
+  [ ! -e "$work/unit-1" ] || diff -u "$work/unit-1" "$unit" || true
+  fail 'the second --apply ran steps'
+fi
 # Only PRESENT items, skipped items and the pairing role report are allowed.
 if grep -vE '^(PRESENT |SKIP |ROLE |saved environments: |runtime clients |mobile pairings: |BASELINE_DONE$)' "$work/second.log"; then
   fail 'the second --apply printed more than PRESENT lines'

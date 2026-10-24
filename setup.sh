@@ -385,6 +385,16 @@ apply_orca() {
   fi
 }
 
+# The Orca .deb may not declare every library its Electron runtime loads (README section 3.3.1): name the missing
+# ones before any Orca step instead of failing later inside orca-ide.
+require_orca_libraries() {
+  local libs
+  have ldd || return 0
+  libs=$(ldd "$(orca_executable)" 2>/dev/null | awk '/not found/ { print $1 }' | paste -sd ' ' -)
+  [ -z "$libs" ] ||
+    die "orca-ide cannot start: its runtime needs $libs, which the Orca .deb does not install; add their packages to manifest/local/baseline.tsv and rerun --apply."
+}
+
 # The pairing role only matters to Orca, so it is checked after the baseline (which brings Node.js to a fresh
 # Linux device) and before any Orca step.
 apply_role_check() {
@@ -409,7 +419,10 @@ do_apply() {
   fi
   process_group apply baseline baseline.tsv
   process_group apply baseline agents.tsv
-  if [ "$PLATFORM" = debian ]; then process_path_block apply; fi
+  if [ "$PLATFORM" = debian ]; then
+    process_path_block apply
+    require_orca_libraries
+  fi
   apply_role_check
   if [ "$PLATFORM" = debian ] && [ "$role" = server ]; then serve_apply "$pairing_address"; fi
   apply_orca

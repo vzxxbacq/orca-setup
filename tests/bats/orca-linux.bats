@@ -179,6 +179,19 @@ deb_install() {
   [[ "$output" == *'unknown key LD_PRELOAD'* ]]
 }
 
+@test "the unit starts the .deb CLI, not a shim a running server puts on PATH" {
+  . "$REPO_ROOT/lib/common.sh"
+  . "$REPO_ROOT/lib/orca-serve.sh"
+  ORCA_CLI=orca-ide
+  fake_present orca-ide
+  [ "$(serve_command)" = "$SB/bin/orca-ide" ]
+  mkdir -p "$SB/usr/bin"
+  printf '#!/bin/sh\n' >"$SB/usr/bin/orca-ide"
+  chmod +x "$SB/usr/bin/orca-ide"
+  export ORCA_SETUP_DEB_CLI=$SB/usr/bin/orca-ide
+  [ "$(serve_command)" = "$SB/usr/bin/orca-ide" ]
+}
+
 @test "the rendered unit passes systemd-analyze verify" {
   local real
   real=$(PATH=/usr/bin:/bin command -v systemd-analyze) || skip 'systemd-analyze is not installed'
@@ -196,6 +209,9 @@ deb_install() {
   fake_baseline_present
   rm -f "$SB/bin/orca-ide"
   echo ca-certificates >>"$FAKE_DPKG"
+  # Orca is not installed yet, so the unit names the CLI the .deb will put there.
+  [ ! -e /usr/bin/orca-ide ] || skip 'this machine has /usr/bin/orca-ide'
+  export ORCA_SETUP_DEB_CLI=/usr/bin/orca-ide
   run_setup --plan --role server --pairing-address "$ADDRESS"
   [ "$status" -eq 0 ]
   snapshot plan-linux-server.txt

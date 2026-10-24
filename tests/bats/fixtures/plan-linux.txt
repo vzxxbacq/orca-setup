@@ -26,6 +26,10 @@ Baseline tools (--apply):
            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates
   install  gnupg                  apt gnupg
            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnupg
+  install  libgbm                 apt libgbm1
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgbm1
+  install  libasound              apt libasound2
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2
   install  gh                     apt gh from https://cli.github.com/packages
            download https://cli.github.com/packages/githubcli-archive-keyring.gpg, require fingerprint(s) 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325
            sudo install -d -m 0755 <sandbox>/apt/keyrings

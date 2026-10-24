@@ -1,7 +1,8 @@
 # Baseline tools and optional-module packages: the single source of truth for every platform.
 # Columns (tab-separated, use "-" for an empty field):
 #   name    unique key; a row in manifest/local/baseline.tsv with the same key replaces this one
-#   check   how presence is detected: a command, "a|b" for alternatives, "app:Name" for /Applications/Name.app
+#   check   how presence is detected: a command, "a|b" for alternatives, "app:Name" for /Applications/Name.app,
+#           "lib:soname" for a shared library the dynamic linker knows (Linux)
 #   group   baseline (installed by --apply) or the optional module that installs it
 #   macos   brew:<formula> | cask:<cask> | npm:<package> | os (shipped with macOS) | - (not applicable)
 #   debian  Ubuntu 24.04 / Debian 12 (x86_64): apt:<package> | apt-repo:<repo>:<package> (repo from apt-repos.tsv) |
@@ -30,6 +31,11 @@ curl	curl	baseline	os	apt:curl
 unzip	unzip	baseline	os	apt:unzip
 ca-certificates	-	baseline	os	apt:ca-certificates
 gnupg	gpg	baseline	-	apt:gnupg
+# Electron needs these libraries, but the Orca .deb does not depend on them (electron-builder's default list lacks
+# them), so a minimal server or container cannot start orca-ide without them. On Ubuntu 24.04 apt picks the t64
+# package (libasound2t64) for libasound2.
+libgbm	lib:libgbm.so.1	baseline	-	apt:libgbm1
+libasound	lib:libasound.so.2	baseline	-	apt:libasound2
 orca	app:Orca|orca-ide	baseline	cask:stablyai/orca/orca	orca-deb:stablyai/orca:orca-ide
 docker	app:Docker|docker	containers	cask:docker-desktop	docker-apt-repo:docker-ce
 xcodegen	xcodegen	apple	brew:xcodegen	-
