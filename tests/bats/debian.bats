@@ -218,16 +218,22 @@ apply_ready() {
 }
 
 @test "key_matches with real gpg and a generated key" {
-  local real_gpg
-  real_gpg=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin command -v gpg) || skip 'gpg is not installed'
+  local real_path=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin real_gpg home fpr status=0
+  real_gpg=$(PATH=$real_path command -v gpg) || skip 'gpg is not installed'
   fake_cmd gpg "exec '$real_gpg' \"\$@\""
   . "$REPO_ROOT/lib/common.sh"
   . "$REPO_ROOT/lib/pkg-debian.sh"
-  local home=$SB/gnupg fpr
-  mkdir -m 700 "$home"
-  GNUPGHOME=$home gpg --batch --quiet --passphrase '' --quick-gen-key 'orca-setup test <test@example.invalid>' ed25519 sign never
-  GNUPGHOME=$home gpg --batch --armor --export >"$SB/test.asc"
-  fpr=$(GNUPGHOME=$home gpg --batch --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+  # Key generation needs gpg-agent from the real PATH and a short socket path.
+  home=$(mktemp -d /tmp/orca-setup-gpg.XXXXXX)
+  {
+    PATH=$real_path GNUPGHOME=$home gpg --batch --quiet --passphrase '' \
+      --quick-gen-key 'orca-setup test <test@example.invalid>' ed25519 sign never &&
+      PATH=$real_path GNUPGHOME=$home gpg --batch --armor --export >"$SB/test.asc" &&
+      fpr=$(PATH=$real_path GNUPGHOME=$home gpg --batch --with-colons --list-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+  } || status=$?
+  PATH=$real_path GNUPGHOME=$home gpgconf --kill gpg-agent 2>/dev/null || true
+  rm -rf -- "$home"
+  [ "$status" -eq 0 ]
   [ "$(key_fingerprints "$SB/test.asc")" = "$fpr" ]
   key_matches "$SB/test.asc" "AAAA,$fpr"
   ! key_matches "$SB/test.asc" "$GH_FPRS"
