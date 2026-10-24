@@ -143,7 +143,7 @@ if [ "$mode" = client ]; then
   id -nG "$USER" | tr ' ' '\n' | grep -qx docker || fail "$USER is not in the docker group"
   grep -qx 'NOTE log out and back in (a new login) before using docker without sudo' "$work/first.log" ||
     fail 'no new-login notice for the docker group'
-  for tool in pdftotext ffmpeg 7z adb gemini; do command -v "$tool" || fail "$tool is missing"; done
+  for tool in pdftotext ffmpeg 7z adb fastboot gemini; do command -v "$tool" || fail "$tool is missing"; done
   [ -x "$HOME/.local/bin/marksman" ] || fail 'marksman is not in ~/.local/bin'
   "$HOME/.local/bin/marksman" --version || fail 'marksman does not run'
   adb version || fail 'adb does not run'

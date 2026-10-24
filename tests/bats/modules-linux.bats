@@ -78,8 +78,9 @@ only_present() {
   [[ "$output" == *'install  docker                 apt docker-ce from https://download.docker.com/linux/ubuntu'* ]]
   [[ "$output" == *"download https://download.docker.com/linux/ubuntu/gpg, require fingerprint(s) $DOCKER_FPR"* ]]
   [[ "$output" == *"deb [arch=amd64 signed-by=$SB/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable"* ]]
-  # The repository is set up once for all its packages.
+  # The repository is set up once for all its packages, and the package lists are refreshed once per source.
   [ "$(grep -c 'download https://download.docker.com' <<<"$output")" -eq 1 ]
+  [ "$(grep -c 'apt-get update' <<<"$output")" -eq 1 ]
   [[ "$output" == *'apt-get install -y --no-install-recommends docker-compose-plugin'* ]]
   [[ "$output" == *'sudo usermod -aG docker builder'* ]]
   [[ "$output" == *'--apple         macOS only: skipped on Linux with a notice. [selected]'*'skip: not applicable on Linux'* ]]
@@ -90,7 +91,7 @@ only_present() {
   [[ "$output" == *'require the sha256 digest GitHub records for that asset, then install it as ~/.local/bin/marksman'* ]]
   [[ "$output" == *'install  gemini                 npm @google/gemini-cli -> ~/.local'* ]]
   # Every root command is printed as an indented "sudo ..." line.
-  [ -z "$(grep 'sudo' <<<"$output" | grep -v -e '^ \{11,\}sudo ' -e '^sudo: present')" ]
+  [ -z "$(grep 'sudo' <<<"$output" | grep -v -e '^ \{11,\}sudo ' -e '^sudo: present' -e '^  --')" ]
   no_calls
 }
 
@@ -107,7 +108,7 @@ only_present() {
   printf '%s\n' sleep.target suspend.target hibernate.target hybrid-sleep.target >"$SB/masked"
   printf ' docker' >"$SB/groups"
   local name
-  for name in pdftotext ffmpeg 7z marksman adb gemini; do fake_present "$name"; done
+  for name in pdftotext ffmpeg 7z marksman adb fastboot gemini; do fake_present "$name"; done
   run_setup --plan --power --media --android --agent-gemini
   [ "$status" -eq 0 ]
   [[ "$output" == *'already masked: sleep.target'* ]]
@@ -249,7 +250,10 @@ only_present() {
 @test "--android installs android-sdk-platform-tools when the distribution offers it" {
   apply_modules --android
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  grep -qxF 'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends android-sdk-platform-tools' "$FAKE_LOG"
+  local package
+  for package in android-sdk-platform-tools adb fastboot; do
+    grep -qxF "sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $package" "$FAKE_LOG"
+  done
 }
 
 @test "--android is skipped with a notice when the apt sources do not offer it" {

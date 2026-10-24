@@ -55,7 +55,7 @@ apply_ready() {
   [[ "$output" == *"sudo install -m 0644 <verified key> $SB/apt/keyrings/nodesource.gpg"* ]]
   [[ "$output" == *"deb [arch=amd64 signed-by=$SB/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"* ]]
   # Every root command is printed as "sudo ...", indented under the item that needs it.
-  [ -z "$(grep 'sudo' <<<"$output" | grep -v -e '^           sudo ' -e '^sudo: present')" ]
+  [ -z "$(grep 'sudo' <<<"$output" | grep -v -e '^           sudo ' -e '^sudo: present' -e '^  --')" ]
   no_calls
 }
 

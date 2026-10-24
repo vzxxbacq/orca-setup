@@ -1,7 +1,7 @@
 # orca-setup — PLAN
 
-> Status: **P0 (macOS parity), P1 (Linux baseline) and P2 (Orca on Linux) implemented**; P2's pairing acceptance on a
-> real Linux machine is pending (§6).
+> Status: **P0 (macOS parity), P1 (Linux baseline), P2 (Orca on Linux) and P3 (auth + optional modules on Linux)
+> implemented**; real-machine acceptance of P2's pairing and of P3's interactive logins is pending (§6).
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -17,20 +17,24 @@
 ./setup.sh --apply --role server    # install what is missing, Orca skills and defaults (role is required)
 ./setup.sh --apply --role server --pairing-address <ip-or-host>   # Linux server: also the orca-serve user unit
 ./setup.sh --apply --role server --power --media      # plus optional modules
+./setup.sh --check --media          # readiness, counting the given modules' items too
 ./setup.sh --apply --role client --task-source linear # plus Linear as Orca's task source (opt-in)
 ./setup.sh --auth-gh                # interactive logins, one or more per run: gh codex claude agy linear
 ```
 
-- Optional modules (`--power --containers --apple --android --media --agent-gemini`) only run together with
-  `--apply`; with `--plan` (or no mode) they are shown in detail. They never run on their own.
+- Optional modules (`--power --containers --apple --android --media --agent-gemini`) only install together with
+  `--apply`; with `--plan` (or no mode) they are shown in detail, and `--check` counts their items. They never run
+  on their own, and a module that does not apply to the device (`--apple` on Linux, for example) is skipped with a
+  notice, not an error.
 - `--auth-*` flags are their own mode and cannot be combined with `--plan`, `--apply` or `--check`.
 - Run as your regular user; `sudo ./setup.sh` is refused. On macOS only `--power` and `--apple` call `sudo`
-  themselves; on Linux the baseline apt steps (packages, repository keys and source lists, the Orca `.deb`) and,
-  for `--role server`, `loginctl enable-linger` also run through `sudo`, and `--plan` prints every one of those commands.
+  themselves; on Linux the baseline apt steps (packages, repository keys and source lists, the Orca `.deb`), for
+  `--role server` `loginctl enable-linger`, and the modules' apt steps, `systemctl mask` (`--power`) and
+  `usermod -aG docker` (`--containers`) run through `sudo`, and `--plan` prints every one of those commands.
 - On Linux (Ubuntu 24.04 / Debian 12, x86_64; anything else is refused) `--apply` installs the baseline tools,
   agents and Orca's `.deb`, writes the PATH block (§3.1), and sets up Orca for the role (§3.3.2): a server gets the
-  `orca-serve` systemd user unit and linger, a client gets Orca and its CLI only. Optional modules are skipped until
-  P3; `--auth-gh`, `--auth-codex` and `--auth-claude` work, `--auth-agy` and `--auth-linear` arrive in P3.
+  `orca-serve` systemd user unit and linger, a client gets Orca and its CLI only. The optional modules have Linux
+  versions (§3.5), and every `--auth-*` works headless (§3.4).
 - `--pairing-address` is required for `--apply --role server` on Linux and refused anywhere else (macOS picks the
   address in Orca's Settings; a client never advertises one).
 
@@ -67,12 +71,13 @@
 | Principle | How it is implemented |
 |---|---|
 | Read-only by default | no arguments = `--plan`, which only prints what would happen |
-| Run as non-root | check `id -u`, refuse `sudo ./setup.sh`; `sudo` is called internally only where root is required: on Linux the baseline apt steps (packages, repository keys, source lists), on both platforms explicit modules (`--power` etc.); `--plan` lists every such command |
+| Run as non-root | check `id -u`, refuse `sudo ./setup.sh`; `sudo` is called internally only where root is required: on Linux the apt steps (packages, repository keys, source lists), on both platforms explicit modules (`--power`, `--containers` etc.); `--plan` lists every such command |
 | Preserve existing installs | detect first (`command -v` / package-manager query), install only when missing; never upgrade existing versions |
-| No credential leakage | `umask 077`; the audit prints booleans/names only, never values |
+| No credential leakage | `umask 077`; the audit prints booleans/names only, never values; the Linear key is read without echo and goes only to Orca |
 | npm first | agent CLIs are installed from npm whenever a package exists; vendor installers only when there is none |
 | User-level first | npm global tools go to `~/.local` (`npm --prefix ~/.local`); PATH always includes `~/.local/bin`, and on Linux `--apply` persists it in `~/.profile` and `~/.zshrc` |
-| Single source of truth | tool lists live in `manifest/` and are read per platform, so the macOS and Linux lists cannot drift |
+| Single source of truth | tool lists live in `manifest/` and are read per platform, so the macOS and Linux lists cannot drift; module packages, repositories and the packages that mark a foreign install too |
+| Verify every download | apt keys must match the fingerprints in `manifest/apt-repos.tsv`; GitHub release files (the Orca `.deb`, marksman) must match GitHub's sha256 digest |
 | One pairing role per host | every device is either a client or a server, never both (§5.1) |
 
 ---
@@ -101,7 +106,9 @@ Linux notes:
 - Third-party repositories follow each vendor's own layout: the key goes to `/etc/apt/keyrings/` and the source list
   uses `signed-by=`. The expected primary-key fingerprints are recorded in `manifest/apt-repos.tsv`; a downloaded key
   is trusted only when every primary key in it is listed there, otherwise `--apply` stops before writing anything.
-  A repository is only added when its package is missing. Docker Engine's repository belongs to `--containers` (P3).
+  A repository is only added when its package is missing. Docker Engine's repository belongs to `--containers`
+  (§3.5); its URL and suite are per distribution (`{distro}`/`{codename}` in the manifest: `ubuntu`/`noble`,
+  `debian`/`bookworm`).
 - PATH: `--apply` appends a marked block (`# >>> orca-setup PATH >>>`) that puts `~/.local/bin` (npm, uv, uv tools,
   agy) and `~/.grok/bin` (grok) on PATH to `~/.profile` and `~/.zshrc` (created when missing), once, only when the
   block is not there yet. A bash login shell reads `~/.bash_profile` or `~/.bash_login` instead of `~/.profile` when
@@ -128,8 +135,8 @@ cask) is detected and left alone.
 | Gemini (`gemini`) | **optional** (`--agent-gemini`) | npm `@google/gemini-cli` | not usable with personal accounts, so it is never installed by default |
 
 Package names are recorded in `manifest/agents.tsv`, not in scripts. Every baseline agent is installed on Linux x86_64
-too; an agent whose installer does not support Linux would get `-` in the `debian` column (macOS-only). Whether agy's
-sign-in works on a headless host is still to be verified (§9).
+too; an agent whose installer does not support Linux would get `-` in the `debian` column (macOS-only). agy's
+headless sign-in is described in §3.4.
 
 ### 3.3 Orca
 
@@ -227,30 +234,67 @@ journal would keep it.
 
 ### 3.4 Authentication (all interactive, run on demand)
 
-| Mode | What it does | Cross-platform notes |
+| Mode | What it does | Linux without a desktop |
 |---|---|---|
-| `--auth-gh` | `gh auth login --web` (skipped when already logged in) | use the device-code flow when Linux has no desktop |
-| `--auth-codex` | `orca account add --agent codex` (skipped when a Codex account is already selected) | device auth, works headless by design |
-| `--auth-claude` | `orca account add --agent claude` (skipped when a Claude account is already selected) | headless requires a browser or copying the URL |
-| `--auth-agy` | run `agy` to sign in | TBD |
-| `--auth-linear` | open the Linear API settings page, silently read the key and write it into Orca | macOS `open` → Linux `xdg-open`; headless just prints the URL |
+| `--auth-gh` | `gh auth login --web` (skipped when already logged in) | the same command is GitHub's device-code flow: gh shows a one-time code, the user opens `https://github.com/login/device` on any device and enters it; `GH_BROWSER=true` keeps gh from trying a browser here |
+| `--auth-codex` | `orca account add --agent codex` (skipped when a Codex account is already selected) | device auth, works headless by design (P2) |
+| `--auth-claude` | `orca account add --agent claude` (skipped when a Claude account is already selected) | headless requires a browser elsewhere or copying the URL (P2) |
+| `--auth-agy` | run `agy` to sign in (there is no login subcommand) | over SSH agy prints an authorization URL; open it on any device, sign in, paste the code it shows back into the prompt. See the keyring caveat below |
+| `--auth-linear` | open the Linear API settings page, silently read the key and write it into Orca (skipped when Linear is connected) | `xdg-open` when a desktop exists, otherwise the URL `https://linear.app/settings/api` is printed; the key needs this device's Orca runtime (a server), so a device without one stops before the prompt |
+
+"Without a desktop" means neither `DISPLAY` nor `WAYLAND_DISPLAY` is set (`lib/detect.sh`); macOS always has one.
+
+- **Linear key.** `auth/linear-login.cjs` reads the key on a terminal with echo off, never from arguments or a
+  pipe, and passes it on stdin to `orca/orca-rpc.sh local linear.connect`, which stores it inside Orca (sealed in
+  `~/.orca` on Linux). It is never printed, logged or written by this repository.
+- **agy on a headless server (from upstream's docs and issues).** agy keeps its session in the OS keyring, which on
+  Linux is the Secret Service over D-Bus (GNOME Keyring, KWallet). Upstream's troubleshooting page asks for an active
+  D-Bus session and an unlocked keyring; a plain SSH login on a server usually has neither, and then the sign-in
+  succeeds but is not kept (upstream `google-antigravity/antigravity-cli` issues #53 and #950). agy also prints the
+  URL only when it sees an SSH session; in an Orca terminal on a headless server it tries to open a browser instead.
+  `--auth-agy` therefore warns when `SSH_CONNECTION` or `DBUS_SESSION_BUS_ADDRESS` is missing, and `setup.sh` never
+  sets up or unlocks a keyring (that would mean handling a password). Upstream's non-interactive alternative, a
+  Gemini API key in `GEMINI_API_KEY`, is a credential the user configures by hand. Whether a real headless server
+  keeps the sign-in is part of the pending acceptance (§6).
 
 Further auth modes (for example a self-hosted Git server) are added through the local overlay (§3.7), not in this repository.
 
 ### 3.5 Optional modules
 
-Modules are selected on the command line and run only with `--apply`; their packages live in the matching group of
-`manifest/baseline.tsv` / `manifest/agents.tsv`, and extra steps (pmset, Xcode, opening Docker) in `modules/<name>.sh`.
+Modules are selected on the command line and install only with `--apply`; their packages live in the matching group
+of `manifest/baseline.tsv` / `manifest/agents.tsv`, and extra steps (pmset, Xcode, opening Docker, masking sleep
+targets, the docker group) in `modules/<name>.sh`. `--plan` shows each selected module's rows and every `sudo`
+command; a second `--apply` prints only `PRESENT`, `SKIP` and `NOTE` lines.
 
 | Module | macOS | Linux |
 |---|---|---|
-| `--power` no sleep + restart after power loss | `sudo pmset -c sleep 0 autorestart 1` | `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target`; restart-after-power-loss must be set in the BIOS by hand (the script only reminds you) |
-| `--containers` | Docker Desktop (cask) | official Docker Engine apt repo + add the user to the `docker` group |
-| `--apple` | xcodegen / xcbeautify / xcodes + Xcode first launch | not applicable (skip with a notice) |
-| `--android` | android-platform-tools (cask) | apt `android-sdk-platform-tools` or Google's official zip |
-| `--media` | poppler ffmpeg sevenzip marksman | apt `poppler-utils ffmpeg p7zip-full`; marksman from a GitHub release binary |
-| `--agent-gemini` | npm `@google/gemini-cli` | same |
+| `--power` no sleep + restart after power loss | `sudo pmset -c sleep 0 autorestart 1` | `sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target` (only the targets not masked yet); restart-after-power-loss is a BIOS/UEFI setting, so every run prints a reminder. Skipped where systemd is not the init system (containers) |
+| `--containers` | Docker Desktop (cask) | Docker Engine (`docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`) from Docker's apt repository, then `sudo usermod -aG docker $USER`; the group applies from the next login and grants root-equivalent access to the daemon |
+| `--apple` | xcodegen / xcbeautify / xcodes + Xcode first launch | not applicable: skipped with a notice |
+| `--android` | android-platform-tools (cask) | apt `android-sdk-platform-tools` (Debian 12 main, Ubuntu 24.04 universe) plus `adb` and `fastboot`, which that metapackage only recommends; the distributions' builds are older than Google's. When the device's apt sources do not offer them, skipped with a notice pointing to Google's platform-tools zip |
+| `--media` | poppler ffmpeg sevenzip marksman | apt `poppler-utils ffmpeg p7zip-full`; marksman from its GitHub release binary (`marksman-linux-x64`) into `~/.local/bin` |
+| `--agent-gemini` | npm `@google/gemini-cli` | same (`~/.local`) |
 | `--gpu` *(P4)* | not applicable | NVIDIA driver / CUDA detection only, never installs anything |
+
+Linux notes:
+
+- **Docker repository.** The key (`https://download.docker.com/linux/{ubuntu,debian}/gpg`) must consist of the
+  primary key `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88` ("Docker Release (CE deb)"), the fingerprint
+  Docker's own Ubuntu and Debian install guides printed (docker/docs, `engine/install/ubuntu.md` and `debian.md`);
+  it is stored dearmored as `/etc/apt/keyrings/docker.gpg` with the source list
+  `/etc/apt/sources.list.d/docker.list` (`deb [arch=amd64 signed-by=...] https://download.docker.com/linux/<distro>
+  <codename> stable`). Docker's current guide writes `docker.asc` and a deb822 `docker.sources` instead and no longer
+  prints the fingerprint; the one-line form is Docker's earlier layout and keeps the fingerprint check of §3.1.
+- **Existing Docker or Podman is never touched.** `--containers` is skipped (with the reason) when any package listed
+  in `manifest/apt-conflicts.tsv` is installed (Docker's list of unofficial packages, `docker.io docker-compose
+  docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc`, plus `podman`), or when `docker`,
+  `podman` or `docker-ce` exists without the repository setup above (Docker's convenience script, a hand-made
+  repository, GitHub's runner image). Then nothing is installed and the group is left as it is.
+- **marksman** is resolved like the Orca `.deb` (§3.3.1): the latest stable release of `artempyanykh/marksman`
+  through the GitHub API, exactly one `marksman-linux-x64` asset whose URL belongs to that release, and its download
+  must match the `sha256:` digest GitHub records; only then is it copied to `~/.local/bin/marksman`. No `sudo`.
+- `--check --<module>` counts the module's manifest rows plus its own items (`Sleep targets`, `docker group`); a
+  module skipped on the device reports `skipped (<reason>; not counted)`.
 
 ### 3.6 Readiness audit (`--check`)
 
@@ -264,8 +308,11 @@ Modules are selected on the command line and run only with `--apply`; their pack
     accounts and settings are checked only when a runtime runs.
 - After `--apply`, the only counted items on a fresh Linux device are interactive logins: the GitHub login, plus the
   Orca Codex account on a server.
+- Optional modules are checked only when given on the command line (`--check --media`): their manifest rows, the
+  masked sleep targets (`--power`; on macOS the pmset values) and the docker group (`--containers` on Linux) are
+  counted; a module skipped on the device is reported, not counted (§3.5).
 - Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
-  agents from the manifest, a missing Orca CLI, an unreachable Orca runtime (not on a Linux client), missing Orca
+  agents from the manifest (and from the modules given), a missing Orca CLI, an unreachable Orca runtime (not on a Linux client), missing Orca
   skills, an inactive or missing serve unit and linger that is off (Linux server), a `PENDING` GitHub login or Codex
   account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
   other role than `--role`) or an unknown role (unreadable pairing stores). Reported but not counted: versions, the Claude account, Orca settings that differ from the
@@ -297,7 +344,7 @@ orca-setup/
 │   ├── manifest.sh              # manifest parsing and local overlay merge
 │   ├── json.cjs                 # JSON helpers for the shell (names/booleans only)
 │   ├── pkg-macos.sh             # brew formulae / casks
-│   ├── pkg-debian.sh            # apt, third-party apt repos (gh, NodeSource; Docker in P3), Orca .deb, sudo steps
+│   ├── pkg-debian.sh            # apt, third-party apt repos (gh, NodeSource, Docker), GitHub release files (Orca .deb, marksman), sudo steps
 │   ├── orca-serve.sh            # Linux server: pairing address, serve unit rendering, linger, systemctl --user
 │   ├── pkg-fedora.sh            # (later) dnf placeholder
 │   └── npm-tools.sh             # npm global tools under ~/.local
@@ -305,11 +352,12 @@ orca-setup/
 │   ├── baseline.tsv             # tool → per-platform package/install method (single source of truth)
 │   ├── agents.tsv               # agent CLI inventory (baseline / optional, per-platform support)
 │   ├── apt-repos.tsv            # third-party apt repositories and their expected key fingerprints
+│   ├── apt-conflicts.tsv        # packages that mark a foreign install of a repository's software (Docker, Podman)
 │   ├── orca-serve.env           # allowed terminal-limit keys for the serve unit (values go in local/)
 │   ├── orca-skills.tsv          # Orca skills per platform and their install targets
 │   ├── orca-settings.json       # Orca default settings and opt-in task sources
 │   └── local.example/           # placeholder overlay; the real manifest/local/ is git-ignored
-├── modules/                     # power / containers / apple / android / media / agent-gemini (gpu, orca-runtime later)
+├── modules/                     # power / containers / apple / android / media / agent-gemini, macOS and Linux (gpu, orca-runtime later)
 ├── auth/                        # gh / codex / claude / agy / linear (+ linear-login.cjs hidden prompt)
 ├── orca/
 │   ├── orca-rpc.sh              # locate the Orca executable per platform (ORCA_APP_PATH), ELECTRON_RUN_AS_NODE
@@ -321,7 +369,8 @@ orca-setup/
 ├── remote/provision.sh          # (P4) push and run from the control machine (§5)
 ├── .github/workflows/ci.yml     # static checks + bats on Ubuntu and macOS; Linux client containers; Linux server VM
 └── tests/
-    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, Orca on Linux, --plan snapshots, static checks)
+    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, Orca on Linux, Linux modules and auth, --plan snapshots, static checks)
+    │   └── pty.py               # types one line at a hidden prompt on a pseudo-terminal (Linear key tests)
     └── integration/linux.sh     # Linux integration: client in ubuntu:24.04 / debian:12 containers, server on the runner VM
 ```
 
@@ -401,7 +450,7 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | **P0 Skeleton + macOS parity** | `setup.sh` entry, `lib/common.sh`, `lib/detect.sh`, `manifest/`, `--role`; port every mode from setup-mini.sh | on the reference Mac, `--plan` output matches setup-mini.sh; `--check` results do not regress |
 | **P1 Linux baseline** | `pkg-debian.sh`, user-level npm/uv installs, PATH written to `~/.profile`/`~/.zshrc` | in Docker, `ubuntu:24.04` and `debian:12` run `--apply` twice successfully (idempotent); `--check` reports only auth items |
 | **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | accepted on CI (2026-10-24): containers install the `.deb` as a client; the runner VM runs the server unit with linger, reaches the runtime, re-runs as a no-op and counts only interactive logins. **Pending**: a real Linux x86_64 machine paired from a laptop client with `orca environment add`, then `worktree create --agent codex` remotely |
-| **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | each module has clear `--plan` output on Linux and `--apply` is re-entrant |
+| **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | accepted on CI (2026-10-24) for everything that can run unattended: every Linux module has `--plan` output covered by bats, and `--apply` twice is a no-op the second time in ubuntu:24.04 / debian:12 containers (Docker Engine fresh install, media, android, gemini; `--power` and `--apple` skipped) and on the runner VM (`--power` masks the targets, the preinstalled Docker is left alone). **Pending**: the interactive logins (`--auth-gh` device code, `--auth-agy`, `--auth-linear`) on a real headless server; CI tests them with fakes only |
 | **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
 
 ### 6.1 P0 port notes (differences from setup-mini.sh)
@@ -432,8 +481,20 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
   installs Orca only. Skills and settings follow on both, as on macOS.
 - `orca/orca-rpc.sh` and `orca/role.sh` find the `.deb` install under `/opt/Orca` (`ORCA_APP_PATH` overrides).
 - `--check` counts the Linux Orca items by role (§3.6); the P1 notice is gone.
-- `--auth-codex` and `--auth-claude` work on Linux (`orca-ide account add` on the server); agy and Linear stay P3.
+- `--auth-codex` and `--auth-claude` work on Linux (`orca-ide account add` on the server); agy and Linear followed in P3.
 - Real-device acceptance is pending (table above): the CI runner cannot be dialed from another machine.
+
+### 6.4 P3 notes (auth + optional modules on Linux)
+
+- Every `--auth-*` runs on Linux; the headless behaviour is in §3.4. macOS behaviour is unchanged.
+- Linux modules use the same flow as macOS: the module's manifest rows, then its own steps. A module can declare
+  itself not applicable to the device (`--apple` on Linux, `--power` without systemd, `--containers` next to a
+  foreign Docker or Podman, `--android` when apt does not offer the package); `--apply` then prints
+  `SKIP module <name>: <reason>` and continues.
+- `--check` accepts modules and counts their items (§3.6); `--auth-*` still refuses them.
+- `manifest/apt-repos.tsv` accepts `{distro}` and `{codename}`; `manifest/apt-conflicts.tsv` is new; the
+  `github-release:<owner/repo>:<asset>:<command>` method replaces the P1 placeholder `github-release:<name>`, and the
+  P1 placeholder `docker-apt-repo:` became ordinary `apt-repo:docker:<package>` rows.
 
 ---
 
@@ -445,17 +506,25 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
   snapshots with `UPDATE_SNAPSHOTS=1 bats tests/bats/plan.bats` and review the diff.
 - **Linux integration** (`tests/integration/linux.sh`, `.github/workflows/ci.yml`), as a non-root user with
   passwordless sudo, in two shapes:
-  - `client` in a container matrix (ubuntu:24.04 / debian:12, amd64; no systemd): `--apply --role client` twice (the
-    second run must run no step and leave packages, apt sources, keyrings and dotfiles unchanged), a login shell must
+  - `client` in a container matrix (ubuntu:24.04 / debian:12, amd64; no systemd): `--apply --role client` with every
+    optional module twice (the second run must run no step and leave packages, apt sources, keyrings, dotfiles and
+    groups unchanged); Docker Engine must be installed from Docker's repository with the user in the docker group,
+    `pdftotext`, `ffmpeg`, `7z`, `adb`, `gemini` and `~/.local/bin/marksman` must run, and `--power` / `--apple` must
+    be skipped; a login shell must
     find the user-level tools and `orca-ide`, the `.deb` must be installed and `orca-ide` must run, the skills must be
     installed, no unit may be written, the rendered unit must pass `systemd-analyze verify`, and `--check` must count
     only the interactive GitHub login;
   - `server` directly on GitHub's Ubuntu 24.04 runner VM (systemd), as the runner user:
-    `--apply --role server --pairing-address 127.0.0.2` (test-only override, §3.3.2) twice; the unit must be enabled
+    `--apply --role server --pairing-address 127.0.0.2 --power --containers` (test-only override, §3.3.2) twice; the
+    sleep targets must be masked, the runner's preinstalled Docker (packages, apt sources, group) must be unchanged
+    and `--containers` skipped, the unit must be enabled
     and active, linger on, the unit must pass `systemd-analyze --user verify`, `orca-ide status --json` must report the
     runtime reachable, neither the setup output, the status reply nor the unit's journal may contain a pairing URL,
     and `--check` must count only the GitHub login and the Orca Codex account.
-  Pairing from another machine is verified on real hardware (§6).
+  Pairing from another machine and the interactive logins are verified on real hardware (§6). In bats, every
+  module's plan, the key fingerprint and release digest checks, the skip paths, headless detection and the auth
+  modes run against fakes; the Linear key is typed on a pseudo-terminal (`tests/bats/pty.py`, only once echo is
+  off) and must appear in no output and no file except what the fake Orca runtime received.
 - **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`.
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
@@ -472,8 +541,12 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported (`computer-use` has an upstream Linux helper and stays installed, §3.3) |
 | A pairing URL leaks through logs or scrollback | the unit runs with `--no-pairing`; `setup.sh` never asks for an offer; the user creates links in an interactive terminal (§3.3.2); tests assert no pairing URL in any output or journal |
 | The `.deb` download is tampered with | GitHub's per-asset sha256 digest and the package's control fields are checked before `apt-get` sees the file; no digest, no install (§3.3.1) |
-| Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine |
-| GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification |
+| Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine (Linear; agy prints its own over SSH) |
+| agy cannot keep its sign-in on a headless server (no unlocked Secret Service keyring) | documented in §3.4; `--auth-agy` warns without SSH or D-Bus; `setup.sh` never handles keyring passwords; verified on real hardware (§6) |
+| `--containers` replaces or upgrades a Docker or Podman someone installed another way | skipped when a conflicting package (`manifest/apt-conflicts.tsv`) or a foreign `docker`/`podman` exists; CI checks the runner's preinstalled Docker stays unchanged |
+| The docker group is root-equivalent | only added by the explicit `--containers` module; `--plan` and the README say so |
+| GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification (Docker's no longer appears in its current guide; the recorded one comes from its earlier guides, §3.5) |
+| A GitHub release binary (marksman) is tampered with | GitHub's per-asset sha256 digest is required before it is copied into `~/.local/bin`; no digest, no install |
 | No public CLI lists the runtime clients paired with a host, so `orca/role.sh` reads Orca's device registry file | read only scope/name/last-seen; never print tokens; fail closed (`ROLE unknown`) when the file does not parse or has an unexpected shape; covered by bats tests with fake registries; switch to a CLI once one exists |
 | Dual pairing roles corrupt editor tabs across hosts | `--role` is mandatory for `--apply`; preflight refuses a dual role (§5.1) |
 | Private details leak into the public repository | local overlay for anything organization-specific; CI leak check (§7) |
@@ -504,12 +577,19 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Pairing link on a Linux server | never handled by `setup.sh`; the unit runs with `--no-pairing` and the user runs `orca-ide serve` in a terminal while the unit is stopped (§3.3.2) |
 | P2 acceptance | accepted on CI; pairing from a laptop client to a real Linux x86_64 machine is pending (§6) |
 | `computer-use` on Linux | installed: upstream ships a Linux AT-SPI helper; it needs a graphical session to drive apps (§3.3) |
+| agy sign-in on a headless host | `--auth-agy` runs agy, which prints a URL over SSH; keeping the session needs an unlocked Secret Service keyring, which `setup.sh` does not set up (§3.4) |
+| Docker on Linux | Docker Engine from Docker's apt repository, key fingerprint `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`; a foreign Docker or Podman is left alone (§3.5) |
+| Android tools on Linux | the distributions' `android-sdk-platform-tools` (older than Google's zip); skipped with a pointer to the zip where apt lacks it |
+| P3 acceptance | accepted on CI; the interactive logins on a real headless server are pending (§6) |
 
 **Open**
 
-1. agy's interactive sign-in on a headless host: to be verified on a real machine (P3). (agy's installer itself
-   supports Linux x86_64 and is part of the P1 baseline.)
-2. P2 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
+1. agy's interactive sign-in on a real headless server: whether the session survives a new SSH login without a
+   desktop keyring (upstream issues #53, #950). If not, decide whether to document a keyring setup or the
+   `GEMINI_API_KEY` route (§3.4).
+2. P3 real-device acceptance (pending): `--auth-gh` device code, `--auth-linear` into the server's Orca, and
+   `--containers` / `--power` on real hardware.
+3. P2 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
    `--apply --role server`, then `orca worktree create --environment <server> --agent codex` from the client; also
    check whether `computer-use` can drive an app under Xvfb on a headless server.
 

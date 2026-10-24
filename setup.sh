@@ -327,7 +327,8 @@ print_orca_plan() {
 }
 
 print_module_plan() {
-  local name selected
+  local name selected plan_rows
+  plan_rows=$(mktemp "${TMPDIR:-/tmp}/orca-setup-plan.XXXXXX")
   info 'Optional modules (add to --apply):'
   for name in $MODULES; do
     selected=''
@@ -335,9 +336,12 @@ print_module_plan() {
     printf '  --%-13s %s%s\n' "$name" "$("$(module_function "$name" describe)")" "$selected"
     [ -n "$selected" ] || continue
     if module_skipped "$name" plan; then info "    skip: $MODULE_SKIP_REASON"; continue; fi
-    process_group plan "$name" "$(group_manifest "$name")" | sed "s/^/  /"
+    # Through a file, not a pipe: the plan's apt state (lists refreshed, repositories shown) must outlive the call.
+    process_group plan "$name" "$(group_manifest "$name")" >"$plan_rows"
+    sed 's/^/  /' "$plan_rows"
     if has_function "$(module_function "$name" plan)"; then "$(module_function "$name" plan)"; fi
   done
+  rm -f -- "$plan_rows"
 }
 
 do_plan() {

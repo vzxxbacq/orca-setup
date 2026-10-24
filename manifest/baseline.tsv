@@ -48,7 +48,11 @@ docker-compose-plugin	-	containers	-	apt-repo:docker:docker-compose-plugin
 xcodegen	xcodegen	apple	brew:xcodegen	-
 xcbeautify	xcbeautify	apple	brew:xcbeautify	-
 xcodes	xcodes	apple	brew:xcodes	-
+# On Linux android-sdk-platform-tools is a metapackage that only recommends adb and fastboot (--apply installs
+# without recommends), so they are rows of their own.
 android-platform-tools	adb	android	cask:android-platform-tools	apt:android-sdk-platform-tools
+adb	adb	android	-	apt:adb
+fastboot	fastboot	android	-	apt:fastboot
 poppler	pdftotext	media	brew:poppler	apt:poppler-utils
 ffmpeg	ffmpeg	media	brew:ffmpeg	apt:ffmpeg
 sevenzip	7zz|7z	media	brew:sevenzip	apt:p7zip-full

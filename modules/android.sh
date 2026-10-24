@@ -26,5 +26,7 @@ module_android_skip() {
 
 module_android_plan() {
   [ "$PLATFORM" = debian ] || return 0
+  [ -n "$(platform_rows baseline.tsv android | while IFS=$'\t' read -r _ check method; do row_present "$check" "$method" || echo missing; done)" ] ||
+    return 0
   info "    when the refreshed package lists do not offer it, --apply skips it with a notice (Google's zip: $ANDROID_PLATFORM_TOOLS_URL)"
 }
