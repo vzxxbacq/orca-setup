@@ -1,0 +1,12 @@
+{
+  "settings": {
+    "defaultTuiAgent": "codex",
+    "agentStatusHooksEnabled": true
+  },
+  "taskSources": {
+    "linear": {
+      "defaultTaskSource": "linear",
+      "visibleTaskProviders": ["linear"]
+    }
+  }
+}

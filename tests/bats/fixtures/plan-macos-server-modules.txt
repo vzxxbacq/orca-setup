@@ -1,0 +1,56 @@
+orca-setup plan (read-only; nothing is changed)
+Device: macos 15.5 arm64, package manager: brew, desktop: yes, Orca CLI: orca
+Pairing role: server (detected: none); accepts runtime pairings, never saves environments
+Homebrew: present
+Baseline tools (--apply):
+  present  git
+  install  git-lfs                brew formula git-lfs
+  present  gh
+  present  ripgrep
+  present  jq
+  install  tmux                   brew formula tmux
+  install  cmake                  brew formula cmake
+  install  pkg-config             brew formula pkgconf
+  present  node
+  install  pnpm                   npm pnpm -> ~/.local
+  install  python                 brew formula python@3.12
+  install  uv                     brew formula uv
+  install  ruff                   brew formula ruff
+  present  curl
+  present  unzip
+  present  ca-certificates
+  present  orca
+Agent CLIs (--apply):
+  present  codex
+  present  claude
+  install  dsh                    npm @deepseek-ai/dsh -> ~/.local
+  install  dsh-tui                npm @deepseek-harness-tui/dsh-tui -> ~/.local
+  install  pi                     npm @earendil-works/pi-coding-agent -> ~/.local
+  install  bun                    npm bun -> ~/.local
+  install  omp                    npm @oh-my-pi/pi-coding-agent -> ~/.local
+  install  grok                   official installer https://x.ai/cli/install.sh
+  install  agy                    official installer https://antigravity.google/cli/install.sh
+Orca (--apply):
+  install  skills computer-use orca-emulator
+           orca skills install --skill computer-use --skill orca-emulator --agent universal,claude-code,codex
+  update   settings defaultTuiAgent defaultTaskSource visibleTaskProviders: {"defaultTuiAgent":"codex","agentStatusHooksEnabled":true,"defaultTaskSource":"linear","visibleTaskProviders":["linear"]}
+Optional modules (add to --apply):
+  --power         Use sudo to prevent AC sleep and enable restart after power loss. [selected]
+    sudo pmset -c sleep 0 autorestart 1
+  --containers    Install Docker Desktop if missing, then open it for initialization.
+  --apple         Install Apple build helpers; open the App Store if full Xcode is missing.
+  --android       Install Android platform tools if missing.
+  --media         Install PDF/media processing helpers if missing. [selected]
+    install  poppler                brew formula poppler
+    install  ffmpeg                 brew formula ffmpeg
+    install  sevenzip               brew formula sevenzip
+    install  marksman               brew formula marksman
+  --agent-gemini  Install the Gemini CLI if missing (optional; not usable with personal accounts).
+Authentication (interactive, run on their own):
+  --auth-gh       GitHub browser authentication, retaining an existing valid login.
+  --auth-codex    Add a Codex account to this host's Orca using device authentication.
+  --auth-claude   Add a Claude account to this host's Orca (interactive), unless one is selected.
+  --auth-agy      Start agy for interactive Google account sign-in.
+  --auth-linear   Open Linear's API settings and read a key without echoing or logging it.
+  --check         Show baseline and authentication readiness, without printing credentials.
+Existing installations and user configuration are preserved. SSH is never configured.

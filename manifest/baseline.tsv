@@ -1,0 +1,35 @@
+# Baseline tools and optional-module packages: the single source of truth for every platform.
+# Columns (tab-separated, use "-" for an empty field):
+#   name    unique key; a row in manifest/local/baseline.tsv with the same key replaces this one
+#   check   how presence is detected: a command, "a|b" for alternatives, "app:Name" for /Applications/Name.app
+#   group   baseline (installed by --apply) or the optional module that installs it
+#   macos   brew:<formula> | cask:<cask> | npm:<package> | os (shipped with macOS) | - (not applicable)
+#   debian  install method for Ubuntu/Debian, implemented in P1
+
+git	git	baseline	brew:git	apt:git
+git-lfs	git-lfs	baseline	brew:git-lfs	apt:git-lfs
+gh	gh	baseline	brew:gh	gh-apt-repo:gh
+ripgrep	rg	baseline	brew:ripgrep	apt:ripgrep
+jq	jq	baseline	brew:jq	apt:jq
+tmux	tmux	baseline	brew:tmux	apt:tmux
+cmake	cmake	baseline	brew:cmake	apt:cmake
+pkg-config	pkg-config	baseline	brew:pkgconf	apt:pkg-config
+build-essential	cc	baseline	-	apt:build-essential
+node	node	baseline	brew:node@24	nodesource:24
+pnpm	pnpm	baseline	npm:pnpm	npm:pnpm
+python	python3.12	baseline	brew:python@3.12	uv-python:3.12
+uv	uv	baseline	brew:uv	installer:https://astral.sh/uv/install.sh
+ruff	ruff	baseline	brew:ruff	uv-tool:ruff
+curl	curl	baseline	os	apt:curl
+unzip	unzip	baseline	os	apt:unzip
+ca-certificates	-	baseline	os	apt:ca-certificates
+orca	app:Orca	baseline	cask:stablyai/orca/orca	orca-deb:orca-ide
+docker	app:Docker|docker	containers	cask:docker-desktop	docker-apt-repo:docker-ce
+xcodegen	xcodegen	apple	brew:xcodegen	-
+xcbeautify	xcbeautify	apple	brew:xcbeautify	-
+xcodes	xcodes	apple	brew:xcodes	-
+android-platform-tools	adb	android	cask:android-platform-tools	apt:android-sdk-platform-tools
+poppler	pdftotext	media	brew:poppler	apt:poppler-utils
+ffmpeg	ffmpeg	media	brew:ffmpeg	apt:ffmpeg
+sevenzip	7zz|7z	media	brew:sevenzip	apt:p7zip-full
+marksman	marksman	media	brew:marksman	github-release:marksman
