@@ -80,13 +80,15 @@ PATH_BLOCK_END='# <<< orca-setup PATH <<<'
 # path_block_present <file>: the file already holds the orca-setup PATH block.
 path_block_present() { [ -r "$1" ] && grep -qxF -- "$PATH_BLOCK_BEGIN" "$1"; }
 
-# path_block_add <file>: append the PATH block (user-level tools in ~/.local/bin) once; the file is created when
-# missing and nothing else in it changes.
+# path_block_add <file>: append the PATH block once; the file is created when missing and nothing else in it
+# changes. User-level tools live in ~/.local/bin (npm, uv, agy) and ~/.grok/bin (grok's installer skips its
+# ~/.local/bin link when ~/.grok/bin is already on PATH, as it is under setup.sh).
 path_block_add() {
   path_block_present "$1" && return 0
   info "+ add the orca-setup PATH block to $1"
   # shellcheck disable=SC2016 # expanded by the shell that reads the file
-  printf '\n%s\n%s\n%s\n' "$PATH_BLOCK_BEGIN" \
+  printf '\n%s\n%s\n%s\n%s\n' "$PATH_BLOCK_BEGIN" \
+    'case ":$PATH:" in *":$HOME/.grok/bin:"*) ;; *) export PATH="$HOME/.grok/bin:$PATH" ;; esac' \
     'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac' \
     "$PATH_BLOCK_END" >>"$1"
 }

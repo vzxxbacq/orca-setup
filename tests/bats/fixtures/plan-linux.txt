@@ -51,8 +51,8 @@ Agent CLIs (--apply):
   install  bun                    npm bun -> ~/.local
   install  omp                    npm @oh-my-pi/pi-coding-agent -> ~/.local
 PATH (--apply):
-  add      PATH block in ~/.profile    puts ~/.local/bin on PATH once (marked block)
-  add      PATH block in ~/.zshrc      puts ~/.local/bin on PATH once (marked block)
+  add      PATH block in ~/.profile    puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
+  add      PATH block in ~/.zshrc      puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
 Pairing role check (--apply): after the baseline install, before any Orca step
 Orca (--apply): skipped on Linux until P2 (headless runtime, skills and settings)
 Optional modules: Linux versions arrive in P3; --apply skips them on Linux.

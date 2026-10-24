@@ -202,7 +202,7 @@ process_path_block() {
       continue
     fi
     case "$1" in
-      plan) printf '  add      PATH block in ~/%-11s puts ~/.local/bin on PATH once (marked block)\n' "$file" ;;
+      plan) printf '  add      PATH block in ~/%-11s puts ~/.local/bin and ~/.grok/bin on PATH (marked block)\n' "$file" ;;
       apply) path_block_add "$HOME/$file" ;;
       check) printf 'MISSING PATH block in ~/%s\n' "$file"; missing=$((missing + 1)) ;;
     esac

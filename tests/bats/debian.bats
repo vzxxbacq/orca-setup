@@ -58,12 +58,11 @@ apply_ready() {
 @test "--plan with everything present lists no sudo command" {
   apply_ready
   local name
-  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip gpg; do fake_present "$name"; done
+  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   run_setup --plan
   [ "$status" -eq 0 ]
-  [[ "$output" != *'sudo '* ]]
-  [[ "$output" != *'  install  '* ]]
+  [ -z "$(grep -e '^ *sudo ' -e '^  install  ' <<<"$output")" ]
   [[ "$output" == *'later    orca                   Orca headless runtime (.deb), P2'* ]]
   no_calls
 }
@@ -146,7 +145,7 @@ apply_ready() {
 
 @test "--apply refuses a gh key whose fingerprint is not in the manifest, before trusting it" {
   apply_ready
-  for name in git-lfs rg jq tmux cmake pkg-config cc unzip gpg; do fake_present "$name"; done
+  for name in git-lfs rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   export FAKE_KEY_FPRS=2C6106201985B60E6C7AC87323F3D4EA75716059,0000000000000000000000000000000000000000
   run_setup --apply --role server
@@ -158,7 +157,7 @@ apply_ready() {
 
 @test "--apply runs the role check after the baseline and refuses the other role" {
   apply_ready
-  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip gpg; do fake_present "$name"; done
+  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   printf '{"environments":[{"name":"control"}]}\n' >"$ORCA_USER_DATA/orca-environments.json"
   run_setup --apply --role server
@@ -172,7 +171,7 @@ apply_ready() {
 
 @test "--check on Linux does not count Orca and reports the PATH block" {
   apply_ready
-  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip gpg; do fake_present "$name"; done
+  for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   fake_cmd gh 'exit 1' # not logged in
   run_setup --check
@@ -221,7 +220,7 @@ apply_ready() {
 @test "key_matches with real gpg and a generated key" {
   local real_gpg
   real_gpg=$(PATH=/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin command -v gpg) || skip 'gpg is not installed'
-  ln -sf "$real_gpg" "$SB/bin/gpg"
+  fake_cmd gpg "exec '$real_gpg' \"\$@\""
   . "$REPO_ROOT/lib/common.sh"
   . "$REPO_ROOT/lib/pkg-debian.sh"
   local home=$SB/gnupg fpr
@@ -246,7 +245,7 @@ apply_ready() {
   [ "$(grep -c '^# <<< orca-setup PATH <<<$' "$HOME/.profile")" -eq 1 ]
   [ "$(head -n 1 "$HOME/.profile")" = 'export EDITOR=vi' ]
   [ -f "$HOME/.zshrc" ]
-  # The block is idempotent when sourced repeatedly and puts ~/.local/bin first exactly once.
+  # The block is idempotent when sourced repeatedly and puts the user tool directories first exactly once.
   run env -i HOME="$HOME" PATH=/usr/bin:/bin "$REAL_BASH" -c '. "$HOME/.profile"; . "$HOME/.profile"; printf "%s" "$PATH"'
-  [ "$output" = "$HOME/.local/bin:/usr/bin:/bin" ]
+  [ "$output" = "$HOME/.local/bin:$HOME/.grok/bin:/usr/bin:/bin" ]
 }

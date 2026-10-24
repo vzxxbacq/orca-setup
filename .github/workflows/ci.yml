@@ -34,7 +34,7 @@ jobs:
       - name: node --check
         run: git ls-files '*.cjs' | xargs -n 1 node --check
       - name: bats
-        run: bats tests/bats
+        run: bats --print-output-on-failure tests/bats
 
   linux-integration:
     name: Linux integration (${{ matrix.image }})

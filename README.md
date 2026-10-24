@@ -97,9 +97,10 @@ Linux notes:
   uses `signed-by=`. The expected primary-key fingerprints are recorded in `manifest/apt-repos.tsv`; a downloaded key
   is trusted only when every primary key in it is listed there, otherwise `--apply` stops before writing anything.
   A repository is only added when its package is missing. Docker Engine's repository belongs to `--containers` (P3).
-- PATH: `--apply` appends a marked block (`# >>> orca-setup PATH >>>`) that puts `~/.local/bin` on PATH to
-  `~/.profile` and `~/.zshrc` (created when missing), once, only when the block is not there yet. The uv installer
-  is run with `UV_NO_MODIFY_PATH=1`; grok's installer links itself into `~/.local/bin`.
+- PATH: `--apply` appends a marked block (`# >>> orca-setup PATH >>>`) that puts `~/.local/bin` (npm, uv, uv tools,
+  agy) and `~/.grok/bin` (grok) on PATH to `~/.profile` and `~/.zshrc` (created when missing), once, only when the
+  block is not there yet. The uv installer runs with `UV_NO_MODIFY_PATH=1`; grok's installer still adds its own block
+  to the rc file of the user's shell, as on macOS.
 - The pairing role check needs Node.js, which a fresh Linux device does not have, so `--apply` runs it after the
   baseline install and before any Orca step (on both platforms, §5.1).
 

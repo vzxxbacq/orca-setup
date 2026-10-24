@@ -3,7 +3,7 @@
 # passwordless sudo (prepared by .github/workflows/ci.yml); never run it on a real machine.
 #   1. --apply --role server installs the baseline;
 #   2. a second --apply changes nothing: no step lines, same packages, apt sources, keyrings and dotfiles;
-#   3. a login shell finds the user-level tools through the PATH block;
+#   3. a login shell finds the user-level tools through the PATH block, and the baseline tools run;
 #   4. --check reports only interactive authentication items as missing.
 set -euo pipefail
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
@@ -43,8 +43,9 @@ diff -u "$work/state-1" "$work/state-2" || fail 'the second --apply changed the 
 echo '::group::login shell PATH'
 # shellcheck disable=SC2016 # expanded by the login shell
 env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin bash -lc \
-  'for tool in node npm pnpm uv python3.12 ruff codex claude dsh pi bun omp grok agy gh; do command -v "$tool" || exit 1; done' ||
-  fail 'a login shell does not find the user-level tools'
+  'for tool in node npm pnpm uv python3.12 ruff codex claude dsh dsh-tui pi bun omp grok agy gh; do command -v "$tool" || exit 1; done
+   for tool in node pnpm uv python3.12 ruff gh bun; do "$tool" --version || exit 1; done' ||
+  fail 'a login shell does not find or cannot run the user-level tools'
 echo '::endgroup::'
 
 echo '::group::--check'
