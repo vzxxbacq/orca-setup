@@ -26,6 +26,10 @@ Baseline tools (--apply):
            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates
   install  gnupg                  apt gnupg
            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends gnupg
+  install  libgbm                 apt libgbm1
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgbm1
+  install  libasound              apt libasound2t64|libasound2
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2t64
   install  gh                     apt gh from https://cli.github.com/packages
            download https://cli.github.com/packages/githubcli-archive-keyring.gpg, require fingerprint(s) 2C6106201985B60E6C7AC87323F3D4EA75716059,7F38BBB59D064DBCB3D84D725612B36462313325
            sudo install -d -m 0755 <sandbox>/apt/keyrings
@@ -39,7 +43,10 @@ Baseline tools (--apply):
   install  pnpm                   npm pnpm -> ~/.local
   install  python                 uv python install 3.12
   install  ruff                   uv tool install ruff
-  later    orca                   Orca headless runtime (.deb), P2
+  install  orca                   .deb from the latest stable stablyai/orca release
+           resolve the latest stable release of stablyai/orca with the GitHub API; download orca-ide_<version>_amd64.deb
+           require the sha256 digest GitHub records for that asset, and Package: orca-ide, Architecture: amd64
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends <verified orca-ide_<version>_amd64.deb>
 Agent CLIs (--apply):
   install  grok                   official installer https://x.ai/cli/install.sh
   install  agy                    official installer https://antigravity.google/cli/install.sh
@@ -54,7 +61,9 @@ PATH (--apply):
   add      PATH block in ~/.profile    puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
   add      PATH block in ~/.zshrc      puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
 Pairing role check (--apply): after the baseline install, before any Orca step
-Orca (--apply): skipped on Linux until P2 (headless runtime, skills and settings)
+Orca server unit: only with --role server --pairing-address <ip-or-host> (README section 3.3.2)
+Orca (--apply):
+  skills and settings follow once Orca is installed and running
 Optional modules: Linux versions arrive in P3; --apply skips them on Linux.
   --power
   --containers
@@ -64,9 +73,9 @@ Optional modules: Linux versions arrive in P3; --apply skips them on Linux.
   --agent-gemini
 Authentication (interactive, run on their own):
   --auth-gh       GitHub browser authentication, retaining an existing valid login.
-  --auth-codex    Linux: arrives with Orca on Linux (P2/P3).
-  --auth-claude   Linux: arrives with Orca on Linux (P2/P3).
-  --auth-agy      Linux: arrives with Orca on Linux (P2/P3).
-  --auth-linear   Linux: arrives with Orca on Linux (P2/P3).
+  --auth-codex    Add a Codex account to this host's Orca using device authentication.
+  --auth-claude   Add a Claude account to this host's Orca (interactive), unless one is selected.
+  --auth-agy      Linux: arrives in P3.
+  --auth-linear   Linux: arrives in P3.
   --check         Show baseline and authentication readiness, without printing credentials.
 Existing installations and user configuration are preserved. SSH is never configured.

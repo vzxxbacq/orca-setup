@@ -20,10 +20,13 @@ snapshot() { # snapshot <name>: compare $output (sandbox paths shown as <sandbox
 
 no_calls() { [ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG"; return 1; }; }
 
-# Everything but the apt packages and gh is present, so --apply only reaches the fakes.
+# Everything but the apt packages and gh is present (Orca too, with its skills), so --apply only reaches the fakes.
 apply_ready() {
   local name
-  for name in npm pnpm python3.12 uv ruff orca-ide codex claude dsh dsh-tui pi bun omp grok agy; do fake_present "$name"; done
+  for name in npm pnpm python3.12 uv ruff codex claude dsh dsh-tui pi bun omp grok agy; do fake_present "$name"; done
+  fake_orca_linux
+  fake_library libgbm.so.1
+  fake_library libasound.so.2
   fake_gpg
   # shellcheck disable=SC2016 # expanded by the stub
   fake_cmd curl 'out=""; prev=""; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done; echo "FAKEKEY ${FAKE_KEY_FPRS//,/ }" >"$out"'
@@ -47,6 +50,7 @@ apply_ready() {
   [[ "$output" == *'sudo: present; --apply runs only the sudo commands listed below as root'* ]]
   # One apt-get update before the first package, one after each repository is added.
   [ "$(grep -c 'sudo env DEBIAN_FRONTEND=noninteractive apt-get update' <<<"$output")" -eq 3 ]
+  [[ "$output" == *'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libgbm1'* ]]
   [[ "$output" == *'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates'* ]]
   [[ "$output" == *"sudo install -m 0644 <verified key> $SB/apt/keyrings/nodesource.gpg"* ]]
   [[ "$output" == *"deb [arch=amd64 signed-by=$SB/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main"* ]]
@@ -63,7 +67,8 @@ apply_ready() {
   run_setup --plan
   [ "$status" -eq 0 ]
   [ -z "$(grep -e '^ *sudo ' -e '^  install  ' <<<"$output")" ]
-  [[ "$output" == *'later    orca                   Orca headless runtime (.deb), P2'* ]]
+  [[ "$output" == *'present  orca'* ]]
+  [[ "$output" == *'present  skills orca-cli orca-linear computer-use'* ]]
   no_calls
 }
 
@@ -106,20 +111,23 @@ apply_ready() {
   no_calls
 }
 
-@test "--auth-* other than gh waits for Orca on Linux" {
-  run_setup --auth-codex
+@test "--auth-agy and --auth-linear wait for P3 on Linux" {
+  run_setup --auth-agy
   [ "$status" -eq 1 ]
-  [[ "$output" == *'only --auth-gh works in P1'* ]]
+  [[ "$output" == *'--auth-agy on Linux arrives in P3'* ]]
+  run_setup --auth-gh --auth-linear
+  [ "$status" -eq 1 ]
+  no_calls
 }
 
 # ------------------------------------------------------------------ apply
 
 @test "--apply installs apt packages first, verifies the gh key, then a second run changes nothing" {
   apply_ready
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *'SKIP orca (P2 on this platform)'* ]]
-  [[ "$output" == *'SKIP Orca: Orca on Linux (headless runtime, skills, settings) arrives in P2'* ]]
+  [[ "$output" == *'PRESENT orca'* ]]
+  [[ "$output" == *'SKIP Orca settings: no Orca runtime runs on this client'* ]]
   [[ "$output" == *'ROLE none'* ]]
   [ "${lines[${#lines[@]} - 1]}" = BASELINE_DONE ]
   # Root commands, in order: apt packages (one update first), then the gh repository and gh.
@@ -134,7 +142,7 @@ apply_ready() {
   [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.zshrc")" -eq 1 ]
 
   : >"$FAKE_LOG"
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 0 ]
   no_calls
   # Only PRESENT items, deferred items and the role report: no step ("+ ...") at all.
@@ -148,7 +156,7 @@ apply_ready() {
   for name in git-lfs rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   export FAKE_KEY_FPRS=2C6106201985B60E6C7AC87323F3D4EA75716059,0000000000000000000000000000000000000000
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 1 ]
   [[ "$output" == *'unexpected signing key 0000000000000000000000000000000000000000'* ]]
   [[ "$output" == *'the gh signing key does not match manifest/apt-repos.tsv'* ]]
@@ -160,7 +168,7 @@ apply_ready() {
   for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   printf '{"environments":[{"name":"control"}]}\n' >"$ORCA_USER_DATA/orca-environments.json"
-  run_setup --apply --role server
+  run_setup --apply --role server --pairing-address 203.0.113.10
   [ "$status" -eq 1 ]
   [[ "$output" == *'PRESENT git'* ]]
   [[ "$output" == *'already holds the other pairing role'* ]]
@@ -169,14 +177,16 @@ apply_ready() {
 
 # ------------------------------------------------------------------ check
 
-@test "--check on Linux does not count Orca and reports the PATH block" {
+@test "--check on a Linux client does not count the runtime and reports the PATH block" {
   apply_ready
   for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   fake_cmd gh 'exit 1' # not logged in
   run_setup --check
-  [[ "$output" == *'SKIP orca (P2 on this platform; not counted)'* ]]
-  [[ "$output" == *'Orca: not checked on Linux until P2 (not counted)'* ]]
+  [[ "$output" == *'PRESENT orca CLI (orca-ide)'* ]]
+  [[ "$output" == *'Orca runtime: not running (client; not counted)'* ]]
+  [[ "$output" == *'Orca skills: installed'* ]]
+  [[ "$output" != *'Orca serve unit'* ]]
   [[ "$output" == *'MISSING PATH block in ~/.profile'* ]]
   [[ "$output" == *'GitHub auth: PENDING'* ]]
   [ "$status" -eq 3 ] || { echo "$output"; return 1; }
@@ -254,4 +264,38 @@ apply_ready() {
   # The block is idempotent when sourced repeatedly and puts the user tool directories first exactly once.
   run env -i HOME="$HOME" PATH=/usr/bin:/bin "$REAL_BASH" -c '. "$HOME/.profile"; . "$HOME/.profile"; printf "%s" "$PATH"'
   [ "$output" = "$HOME/.local/bin:$HOME/.grok/bin:/usr/bin:/bin" ]
+}
+
+# ------------------------------------------------------------------ alternatives
+
+@test "apt alternatives install the first package the distribution has" {
+  . "$REPO_ROOT/lib/common.sh"
+  . "$REPO_ROOT/lib/pkg-debian.sh"
+  # Debian 12: only libasound2 exists.
+  # shellcheck disable=SC2016
+  fake_cmd apt-cache 'for p; do :; done; [ "$p" = libasound2 ]'
+  [ "$(apt_pick 'libasound2t64|libasound2')" = libasound2 ]
+  run debian_install 'apt:libasound2t64|libasound2'
+  [ "$status" -eq 0 ]
+  run cat "$FAKE_LOG"
+  [ "${lines[0]}" = 'sudo env DEBIAN_FRONTEND=noninteractive apt-get update' ]
+  [ "${lines[1]}" = 'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2' ]
+  [ "${#lines[@]}" -eq 2 ]
+  debian_installed 'apt:libasound2t64|libasound2'
+  # Nothing known: the first alternative.
+  fake_cmd apt-cache 'exit 100'
+  [ "$(apt_pick 'libasound2t64|libasound2')" = libasound2t64 ]
+}
+
+@test "an existing ~/.bash_profile gets the PATH block too; it is never created" {
+  . "$REPO_ROOT/lib/common.sh"
+  [ "$(path_block_files | paste -sd ' ' -)" = '.profile .zshrc' ]
+  printf 'source ~/.bashrc\n' >"$HOME/.bash_profile"
+  [ "$(path_block_files | paste -sd ' ' -)" = '.profile .zshrc .bash_profile' ]
+  apply_ready
+  run_setup --apply --role client
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.bash_profile")" -eq 1 ]
+  [ "$(head -n 1 "$HOME/.bash_profile")" = 'source ~/.bashrc' ]
+  [ ! -e "$HOME/.bash_login" ]
 }

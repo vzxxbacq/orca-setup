@@ -55,6 +55,7 @@ setup_environment() {
 #   cmd        a command on PATH
 #   a|b        any of several commands
 #   app:Name   /Applications/Name.app exists (ORCA_SETUP_APPLICATIONS_DIR overrides the folder)
+#   lib:soname the dynamic linker knows a shared library (Linux, `ldconfig -p`)
 #   -          nothing to check
 is_present() {
   local rest=$1 alt
@@ -63,6 +64,7 @@ is_present() {
     alt=${rest%%|*}
     case "$alt" in
       app:*) [ -d "${ORCA_SETUP_APPLICATIONS_DIR:-/Applications}/${alt#app:}.app" ] && return 0 ;;
+      lib:*) shared_library_present "${alt#lib:}" && return 0 ;;
       *) have "$alt" && return 0 ;;
     esac
     [ "$alt" = "$rest" ] && break
@@ -71,9 +73,27 @@ is_present() {
   return 1
 }
 
-# Shell startup files that get the PATH block (Linux): login shells read ~/.profile, zsh reads ~/.zshrc.
-# shellcheck disable=SC2034 # used by setup.sh
+# shared_library_present <soname>: the dynamic linker cache lists the library. ldconfig lives in /sbin, which a
+# regular user's PATH may lack.
+shared_library_present() {
+  local ldconfig
+  ldconfig=$(command -v ldconfig 2>/dev/null) || ldconfig=/sbin/ldconfig
+  [ -x "$ldconfig" ] || return 1
+  "$ldconfig" -p 2>/dev/null | awk -v name="$1" '$1 == name { found = 1 } END { exit !found }'
+}
+
+# Shell startup files that get the PATH block (Linux): login shells read ~/.profile, zsh reads ~/.zshrc. A bash
+# login shell reads ~/.bash_profile or ~/.bash_login instead of ~/.profile when one exists, so an existing one gets
+# the block too (it is never created).
 PATH_BLOCK_FILES='.profile .zshrc'
+path_block_files() {
+  local file
+  # shellcheck disable=SC2086 # a space-separated list
+  printf '%s\n' $PATH_BLOCK_FILES
+  for file in .bash_profile .bash_login; do
+    [ ! -e "$HOME/$file" ] || printf '%s\n' "$file"
+  done
+}
 PATH_BLOCK_BEGIN='# >>> orca-setup PATH >>>'
 PATH_BLOCK_END='# <<< orca-setup PATH <<<'
 

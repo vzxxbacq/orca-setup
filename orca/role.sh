@@ -37,8 +37,8 @@ case "$expect" in '' | client | server) ;; *) echo 'role.sh: --expect needs clie
 runtime=()
 if have node; then
   runtime=(node)
-elif [ "$(detect_os)" = macos ] && [ -x "$(orca_app_path)/Contents/MacOS/Orca" ]; then
-  runtime=(env ELECTRON_RUN_AS_NODE=1 "$(orca_app_path)/Contents/MacOS/Orca")
+elif [ -x "$(orca_executable)" ]; then
+  runtime=(env ELECTRON_RUN_AS_NODE=1 "$(orca_executable)")
 else
   echo 'ROLE unknown'
   echo "reason: neither node nor Orca's bundled runtime is available"

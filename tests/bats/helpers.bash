@@ -12,7 +12,7 @@ REAL_DIFF=$(command -v diff)
 REAL_NODE=$(command -v node)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
-SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail'
+SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch'
 
 make_sandbox() {
   SB=$BATS_TEST_TMPDIR/sandbox
@@ -22,9 +22,10 @@ make_sandbox() {
     path=$(command -v "$util") || continue
     ln -sf "$path" "$SB/bin/$util"
   done
-  export HOME=$SB/home
+  export SB HOME=$SB/home
   export PATH=$SB/bin
   export ORCA_SETUP_BREW_PREFIX=$SB/brew
+  export ORCA_SETUP_DEB_CLI=$SB/no-deb-cli
   export ORCA_SETUP_APPLICATIONS_DIR=$SB/Applications
   export ORCA_USER_DATA=$SB/userdata
   export FAKE_LOG=$SB/fake.log
@@ -71,6 +72,19 @@ case \"\$1\" in
 esac"
 }
 
+# fake_skills_plan <installed-file> <args of skills install...>: the JSON of `skills install --dry-run --json`, with
+# "keep" for skills listed in the file and "write" for the others.
+# shellcheck disable=SC2016 # expanded by the stubs that source it
+FAKE_SKILLS_PLAN='plan=""; prev=""
+for a; do
+  if [ "$prev" = --skill ]; then
+    if grep -qx -- "$a" "$installed" 2>/dev/null; then kind=keep; else kind=write; fi
+    plan="$plan${plan:+,}{\"name\":\"$a\",\"ops\":[{\"kind\":\"$kind\"}]}"
+  fi
+  prev=$a
+done
+echo "{\"executed\":false,\"plan\":{\"skills\":[$plan]}}"'
+
 # A fake Orca: the app bundle (whose executable answers RPC calls) and the CLI.
 fake_orca() {
   local app=$SB/Applications/Orca.app
@@ -93,6 +107,7 @@ SH
 case "$1 $2" in
   "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || echo "{\"ok\":true,\"result\":{\"environments\":[]}}" ;;
   "skills installed") echo "{\"ok\":true,\"result\":{\"skills\":[{\"name\":\"orca-cli\"},{\"name\":\"orca-linear\"}]}}" ;;
+  "skills install") case " $* " in *" --dry-run "*) installed=$SB/mac-skills; printf "orca-cli\norca-linear\n" >"$installed"; '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca $*" >>"$FAKE_LOG" ;; esac ;;
   "status --json") echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true}}}" ;;
   *) echo "orca $*" >>"$FAKE_LOG" ;;
 esac'
@@ -105,7 +120,10 @@ fake_baseline_present() {
   local check alt
   while IFS= read -r check; do
     alt=${check%%|*}
-    case "$alt" in - | app:*) continue ;; esac
+    case "$alt" in
+      - | app:*) continue ;;
+      lib:*) fake_library "${alt#lib:}"; continue ;;
+    esac
     [ -e "$SB/bin/$alt" ] || fake_present "$alt"
   done < <(awk -F'\t' '!/^[[:space:]]*(#|$)/ && $3 == "baseline" { print $2 }' \
     "$REPO_ROOT/manifest/baseline.tsv" "$REPO_ROOT/manifest/agents.tsv")
@@ -123,7 +141,75 @@ fake_linux() {
   # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
   fake_cmd dpkg-query 'for p; do :; done; grep -qxF -- "$p" "$FAKE_DPKG" && printf "install ok installed"'
   # shellcheck disable=SC2016
-  fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"; case "$*" in *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;; esac'
+  fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"
+case "$*" in
+  *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;;
+  *"loginctl enable-linger"*) echo yes >"$SB/linger" ;;
+esac'
+  # The dynamic linker cache starts empty; fake_library adds to it.
+  # shellcheck disable=SC2016
+  fake_cmd ldconfig '[ "$1" = -p ] && cat "$SB/ldconfig" 2>/dev/null'
+  : >"$SB/ldconfig"
+  # A regular user with a fixed name, so snapshots do not depend on who runs the tests.
+  # shellcheck disable=SC2016
+  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; *) echo "uid=1000(builder)" ;; esac'
+}
+
+# fake_orca_linux: Orca installed from the .deb, plus systemd. The CLI (orca-ide on PATH) answers status, skills
+# install (with --dry-run from $SB/orca-skills; `skills installed` needs a runtime and fails) and environment list (failing without a cli-environments.json, so role.sh reads the pairing store files); the
+# Electron executable under $ORCA_APP_PATH answers orca-rpc calls. The runtime is up while $SB/runtime-up exists,
+# which the fake `systemctl --user start` creates. Its status reply carries a fake pairing URL, so any test can
+# prove that setup.sh never prints what the CLI reports.
+fake_orca_linux() {
+  export ORCA_APP_PATH=$SB/opt/Orca
+  mkdir -p "$ORCA_APP_PATH/resources"
+  echo '{"defaultTuiAgent":"claude","agentStatusHooksEnabled":true}' >"$SB/orca-settings.json"
+  printf 'orca-cli\norca-linear\ncomputer-use\n' >"$SB/orca-skills"
+  cat >"$ORCA_APP_PATH/orca-ide" <<SH
+#!$REAL_BASH
+case "\$1" in *role.cjs) exec "$REAL_NODE" "\$@" ;; esac
+[ -e "\$SB/runtime-up" ] || { echo 'runtime unreachable' >&2; exit 1; }
+case "\$3" in
+  settings.get) printf '{"settings":%s}\n' "\$(cat "\$SB/orca-settings.json")" ;;
+  settings.update) cat >"\$SB/orca-settings.json"; echo '{}' ;;
+  accounts.list) echo '{"codex":{"activeAccountId":null},"claude":{"activeAccountId":null}}' ;;
+  *) echo "Orca \$*" >>"\$FAKE_LOG"; echo '{}' ;;
+esac
+SH
+  chmod +x "$ORCA_APP_PATH/orca-ide"
+  # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
+  fake_cmd orca-ide '
+case "$1 $2" in
+  "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || exit 1 ;;
+  "skills installed") exit 1 ;;
+  "skills install")
+    installed=$SB/orca-skills
+    case " $* " in *" --dry-run "*) '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca-ide $*" >>"$FAKE_LOG"; prev=""; for a; do [ "$prev" = --skill ] && echo "$a" >>"$installed"; prev=$a; done ;; esac ;;
+  "status --json")
+    [ -e "$SB/runtime-up" ] || { echo "{\"ok\":false}"; exit 1; }
+    echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true},\"pairing\":{\"url\":\"orca://pair?code=FAKE-PAIRING-SECRET\"}}}" ;;
+  *) echo "orca-ide $*" >>"$FAKE_LOG" ;;
+esac'
+  # shellcheck disable=SC2016
+  fake_cmd loginctl 'case "$1" in show-user) cat "$SB/linger" 2>/dev/null || echo no ;; *) echo "loginctl $*" >>"$FAKE_LOG"; exit 1 ;; esac'
+  # shellcheck disable=SC2016
+  fake_cmd systemctl '
+[ "$1" = --user ] || { echo "systemctl $*" >>"$FAKE_LOG"; exit 1; }
+shift
+quiet=no; [ "${2:-}" = --quiet ] && quiet=yes
+case "$1" in
+  show-environment) exit 0 ;;
+  is-enabled) [ -e "$SB/unit-enabled" ] ;;
+  is-active) if [ -e "$SB/runtime-up" ]; then [ $quiet = yes ] || echo active; else [ $quiet = yes ] || echo inactive; exit 3; fi ;;
+  enable) echo "systemctl --user $*" >>"$FAKE_LOG"; touch "$SB/unit-enabled" ;;
+  start | restart) echo "systemctl --user $*" >>"$FAKE_LOG"; touch "$SB/runtime-up" ;;
+  *) echo "systemctl --user $*" >>"$FAKE_LOG" ;;
+esac'
+}
+
+# fake_library <soname>: the fake `ldconfig -p` (installed by fake_linux) lists the library.
+fake_library() {
+  printf '\t%s (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/%s\n' "$1" "$1" >>"$SB/ldconfig"
 }
 
 # fake_gpg: `gpg --show-keys` lists the fingerprints written in a fake key file ("FAKEKEY <fpr> ..."), and
