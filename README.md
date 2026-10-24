@@ -28,6 +28,8 @@
 - No project data migration; only extension points are reserved.
 - No organization-specific integrations (internal Git hosts, VPNs, mirrors) in this repository; those go in a local, untracked overlay (§3.7).
 - No Linux arm64.
+- No network setup: the private route between client and server (Tailscale, LAN, WireGuard) is the user's job; `setup.sh` only takes the address to advertise.
+- No Fedora/RHEL for now (`pkg-fedora.sh` stays a placeholder).
 - No Windows / WSL for now (revisit later).
 
 ---
@@ -163,7 +165,7 @@ orca-setup/
 │   ├── detect.sh                # OS / distro / arch / package manager / desktop presence / orca CLI name
 │   ├── pkg-macos.sh             # brew formulae / casks
 │   ├── pkg-debian.sh            # apt (incl. third-party repos: gh, NodeSource, Docker)
-│   ├── pkg-fedora.sh            # dnf (P4, optional)
+│   ├── pkg-fedora.sh            # dnf (placeholder, not implemented for now)
 │   └── npm-tools.sh             # npm global tools under ~/.local
 ├── manifest/
 │   ├── baseline.tsv             # tool → per-platform package/install method (single source of truth)
@@ -241,7 +243,7 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | **P1 Linux baseline** | `pkg-debian.sh`, user-level npm/uv installs, PATH written to `~/.profile`/`~/.zshrc` | in Docker, `ubuntu:24.04` and `debian:12` run `--apply` twice successfully (idempotent); `--check` reports only auth items |
 | **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | a real Linux machine / VM can be paired from the control machine with `orca environment add` and can `worktree create --agent codex` remotely |
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | each module has clear `--plan` output on Linux and `--apply` is re-entrant |
-| **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), Fedora (optional), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
+| **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
 
 ---
 
@@ -285,14 +287,14 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Containers on Linux | Docker Engine |
 | GPU | detection only, in P4 |
 | Linux architecture | x86_64 only; no arm64 |
+| Network | not managed by `setup.sh`; the user provides the private route and passes the address to advertise |
+| Fedora/RHEL | not now; `pkg-fedora.sh` is kept as a placeholder |
 | Agent install source | npm whenever a package exists (§3.2); grok and agy use their official installers |
 | Orca on Linux | official `.deb` from GitHub releases, run as `orca-ide serve --supervise` under a systemd user unit (§3.3.1) |
 
 **Open**
 
-1. **Private network**: should `setup.sh` install Tailscale (the route the upstream docs recommend), or is the network left to the user?
-2. **Fedora/RHEL**: still optional in P4, or dropped?
-3. **Linux support** of `agy` and `computer-use`: to be verified on a real machine in P2.
+1. **Linux support** of `agy` and `computer-use`: to be verified on a real machine in P2.
 
 ---
 
