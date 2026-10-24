@@ -1,7 +1,8 @@
 # orca-setup — PLAN
 
-> Status: **P0 (macOS parity), P1 (Linux baseline), P2 (Orca on Linux) and P3 (auth + optional modules on Linux)
-> implemented**; real-machine acceptance of P2's pairing and of P3's interactive logins is pending (§6).
+> Status: **all phases implemented (P0–P4)**: macOS parity, the Linux baseline, Orca on Linux, auth and optional
+> modules on Linux, and remote provisioning from a client. Real-device acceptance of P2's pairing, P3's interactive
+> logins and P4's remote provisioning is **pending**; the checklist in §6.6 runs all of it in one session.
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -18,11 +19,21 @@
 ./setup.sh --apply --role server --pairing-address <ip-or-host>   # Linux server: also the orca-serve user unit
 ./setup.sh --apply --role server --power --media      # plus optional modules
 ./setup.sh --check --media          # readiness, counting the given modules' items too
+./setup.sh --check --json           # the same report as one JSON document (names, states, counts; never values)
+./setup.sh --plan --gpu             # Linux: report the NVIDIA GPU, driver and CUDA (detection only, never installs)
 ./setup.sh --apply --role client --task-source linear # plus Linear as Orca's task source (opt-in)
 ./setup.sh --auth-gh                # interactive logins, one or more per run: gh codex claude agy linear
 ```
 
-- Optional modules (`--power --containers --apple --android --media --agent-gemini`) only install together with
+From the control machine (pairing role client), for a device saved with `orca environment add` (§5.2):
+
+```sh
+remote/provision.sh --environment <name>                       # read-only: runs only ./setup.sh --plan on the device
+remote/provision.sh --environment <name> --apply --pairing-address <ip-or-host> --destination <dir-on-device>
+remote/provision.sh --environment <name> --check               # exit code = the device's missing items
+```
+
+- Optional modules (`--power --containers --apple --android --media --agent-gemini --gpu`) only install together with
   `--apply`; with `--plan` (or no mode) they are shown in detail, and `--check` counts their items. They never run
   on their own, and a module that does not apply to the device (`--apple` on Linux, for example) is skipped with a
   notice, not an error.
@@ -274,7 +285,7 @@ command; a second `--apply` prints only `PRESENT`, `SKIP` and `NOTE` lines.
 | `--android` | android-platform-tools (cask) | apt `android-sdk-platform-tools` (Debian 12 main, Ubuntu 24.04 universe) plus `adb` and `fastboot`, which that metapackage only recommends; the distributions' builds are older than Google's. When the device's apt sources do not offer them, skipped with a notice pointing to Google's platform-tools zip |
 | `--media` | poppler ffmpeg sevenzip marksman | apt `poppler-utils ffmpeg p7zip-full`; marksman from its GitHub release binary (`marksman-linux-x64`) into `~/.local/bin` |
 | `--agent-gemini` | npm `@google/gemini-cli` | same (`~/.local`) |
-| `--gpu` *(P4)* | not applicable | NVIDIA driver / CUDA detection only, never installs anything |
+| `--gpu` | not applicable: skipped with a notice | detection only, never installs anything: NVIDIA GPUs (PCI vendor `0x10de`, display class `0x03xx`, from sysfs, else `lspci`), the loaded driver's version (`/sys/module/nvidia/version`, else `/proc/driver/nvidia/version`; a loaded `nouveau` is named), `nvidia-smi`, and the CUDA toolkit (`nvcc` on `PATH` or in `/usr/local/cuda/bin`) |
 
 Linux notes:
 
@@ -293,8 +304,12 @@ Linux notes:
 - **marksman** is resolved like the Orca `.deb` (§3.3.1): the latest stable release of `artempyanykh/marksman`
   through the GitHub API, exactly one `marksman-linux-x64` asset whose URL belongs to that release, and its download
   must match the `sha256:` digest GitHub records; only then is it copied to `~/.local/bin/marksman`. No `sudo`.
-- `--check --<module>` counts the module's manifest rows plus its own items (`Sleep targets`, `docker group`); a
-  module skipped on the device reports `skipped (<reason>; not counted)`.
+- **`--gpu`** has no manifest rows and no `sudo` command: `--plan` and `--apply` print what they find (`--apply` as
+  `NOTE gpu:` lines) and a hint for installing the driver by hand. With an NVIDIA GPU present, `--check --gpu` counts
+  a missing driver (`NVIDIA driver: MISSING`); `nvidia-smi` and the CUDA toolkit are reported, not counted; without
+  one it reports `NVIDIA GPU: none found (not counted)`.
+- `--check --<module>` counts the module's manifest rows plus its own items (`Sleep targets`, `docker group`,
+  `NVIDIA driver`); a module skipped on the device reports `skipped (<reason>; not counted)`.
 
 ### 3.6 Readiness audit (`--check`)
 
@@ -311,12 +326,23 @@ Linux notes:
 - Optional modules are checked only when given on the command line (`--check --media`): their manifest rows, the
   masked sleep targets (`--power`; on macOS the pmset values) and the docker group (`--containers` on Linux) are
   counted; a module skipped on the device is reported, not counted (§3.5).
+- `--check --json` prints the same report as one JSON document on stdout instead of the text (schema
+  `orca-setup-check/1`): `device`, `role` (requested and detected), `modules`, `missing`, `items` (every reported
+  line as `{name, state, counted}`), `auth` (`gh`, `codex`, `claude`, `linear` with `complete`, `pending`,
+  `not-selected` or `not-connected`, and whether it is counted), `versions` (including `orca` and `orca-latest`) and
+  `audit` (the `READINESS_JSON` object). It holds names, states, counts and versions only, never credential values,
+  and exits with the same code. `remote/provision.sh` reads it instead of parsing the text (§5.2).
+- Orca's version: `VERSION orca <installed> (latest release <version>)`, from `<orca> --version` and the latest stable
+  release of the repository the Linux `.deb` comes from (`manifest/baseline.tsv`, through the GitHub API; `unknown`
+  when it cannot be read). Reported only: `setup.sh` never upgrades Orca (§3.3.1).
 - Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
   agents from the manifest (and from the modules given), a missing Orca CLI, an unreachable Orca runtime (not on a Linux client), missing Orca
   skills, an inactive or missing serve unit and linger that is off (Linux server), a `PENDING` GitHub login or Codex
   account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
-  other role than `--role`) or an unknown role (unreadable pairing stores). Reported but not counted: versions, the Claude account, Orca settings that differ from the
-  manifest, Linear when only Orca's settings select it, and the `READINESS_JSON` audit line.
+  other role than `--role`) or an unknown role (unreadable pairing stores), and a missing NVIDIA driver next to an
+  NVIDIA GPU (`--gpu`). Reported but not counted: versions (including Orca's installed and latest version), the
+  Claude account, Orca settings that differ from the manifest, Linear when only Orca's settings select it,
+  `nvidia-smi` and the CUDA toolkit, and the `READINESS_JSON` audit line.
 
 ### 3.7 Local overlay (untracked)
 
@@ -357,7 +383,7 @@ orca-setup/
 │   ├── orca-skills.tsv          # Orca skills per platform and their install targets
 │   ├── orca-settings.json       # Orca default settings and opt-in task sources
 │   └── local.example/           # placeholder overlay; the real manifest/local/ is git-ignored
-├── modules/                     # power / containers / apple / android / media / agent-gemini, macOS and Linux (gpu, orca-runtime later)
+├── modules/                     # power / containers / apple / android / media / agent-gemini, macOS and Linux; gpu (Linux detection)
 ├── auth/                        # gh / codex / claude / agy / linear (+ linear-login.cjs hidden prompt)
 ├── orca/
 │   ├── orca-rpc.sh              # locate the Orca executable per platform (ORCA_APP_PATH), ELECTRON_RUN_AS_NODE
@@ -366,10 +392,11 @@ orca-setup/
 │   ├── role.cjs                 # role logic: reads the pairing stores, never prints secrets
 │   └── systemd/orca-serve.service  # template of the Linux server's systemd user unit (§3.3.2)
 ├── audit/readiness.cjs          # read-only audit
-├── remote/provision.sh          # (P4) push and run from the control machine (§5)
+├── remote/provision.sh          # run on the control machine: provisions one paired device through the Orca CLI (§5.2)
 ├── .github/workflows/ci.yml     # static checks + bats on Ubuntu and macOS; Linux client containers; Linux server VM
 └── tests/
-    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, Orca on Linux, Linux modules and auth, --plan snapshots, static checks)
+    ├── bats/                    # unit tests (detect, manifest, role, readiness, Debian, Orca on Linux, Linux modules and auth, --gpu,
+    │                            #   --check --json, remote provisioning against a fake Orca server, --plan snapshots, static checks)
     │   └── pty.py               # types one line at a hidden prompt on a pseudo-terminal (Linear key tests)
     └── integration/linux.sh     # Linux integration: client in ubuntu:24.04 / debian:12 containers, server on the runner VM
 ```
@@ -406,6 +433,7 @@ orca-setup/
   README will list them as a "manual checklist". On Linux, step 0 runs `setup.sh` from a clone made on the device;
   step 3 then finds everything in place, and its re-run only prints `PRESENT` lines.
 - The repository is public, so step 2 needs no Git credentials on the device.
+- Steps 2–5 are one command on the control machine: `remote/provision.sh` (§5.2).
 
 ### 5.1 Pairing roles
 
@@ -441,6 +469,52 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
   shape, it reports `ROLE unknown` with the reason: `--apply` refuses and `--check` counts
   `Pairing role check: UNREACHABLE`.
 
+### 5.2 Remote provisioning (`remote/provision.sh`)
+
+`remote/provision.sh --environment <name> [--plan | --apply | --check] [--role server] [--pairing-address <address>]
+[--task-source linear] [modules] [--destination <dir> | --path <dir>] [--fast-forward]` runs on the control machine
+and wraps steps 2–5 for one paired device. Everything goes through the public Orca CLI (resolved like setup.sh's,
+`lib/detect.sh`); the device needs nothing but its paired Orca server.
+
+1. **Preflight** (read-only). This machine must be a client (`orca/role.sh --expect client`: saved environments, no
+   runtime clients seen recently); on a server, a dual role, a host without saved environments or an unknown role
+   it refuses with the reason before asking any server. The environment must be saved here
+   (`orca environment show --environment <name> --json`, which also gives the id behind `runtime:<id>`) and reachable
+   (`orca status --environment <name> --json`). Neither reply is ever printed.
+2. **The checkout** (step 2). An existing project setup of `github:vzxxbacq/orca-setup` on the device is reused
+   (`orca project setups --host runtime:<id> --json`). Otherwise `--apply` clones the public repository with
+   `orca project setup-clone --project github:vzxxbacq/orca-setup --host runtime:<id> --url https://github.com/vzxxbacq/orca-setup
+   --destination <dir> --json` (`--destination` is an absolute parent directory on the device, required then), or
+   registers a checkout made on the device during step 0 with
+   `orca project setup-existing-folder --project github:vzxxbacq/orca-setup --host runtime:<id> --path <dir> --kind git --json`
+   (`--path`). `--plan` and `--check` only print that command and stop: they never clone.
+3. **The terminal.** `orca terminal create --environment <name> --worktree path:<checkout> --title "orca-setup provision" --json`
+   opens one terminal in that workspace. Each step is sent with `orca terminal send --environment <name> --terminal
+   <handle> --text "sh -c '<command>; printf ... <marker> $?'" --enter --json` and its output streamed back with
+   `orca terminal read --environment <name> --terminal <handle> --cursor <n> --json` (shown as `  | ` lines) until a
+   marker line with a per-step nonce carries the exit status. `sh -c` keeps the commands independent of the device's
+   login shell. The terminal stays open at the end, for the logins.
+4. **An existing checkout is verified** first: its `origin` must be this repository (https or ssh spelling, else
+   refused), local changes are reported and never touched, and after a `git fetch` (remote-tracking refs only) a checkout behind its upstream is
+   fast-forwarded only with `--fast-forward` (`git merge --ff-only @{u}`; refused with local changes or local
+   commits). `--apply` refuses to run a checkout that is behind without it; `--plan` and `--check` warn.
+5. **setup.sh** (steps 3 and 5). `--plan` (the default) runs only `./setup.sh --plan --role server [...]`. `--apply`
+   runs `./setup.sh --plan`, then `./setup.sh --apply --role server [--pairing-address ...] [modules]
+   [--task-source ...]`, then `./setup.sh --check --json --role server [modules] [--task-source ...]`; `--check`
+   runs only the last one. The device's report is read from the JSON (§3.6), never from the text.
+6. **sudo** (Linux apt steps and modules). provision.sh never reads, sends or stores a password. When the device's
+   output shows a sudo prompt it prints `ACTION: sudo on <name> is asking for a password. Answer it in the Orca
+   terminal "orca-setup provision" (handle <handle>) of <checkout> on <name>` with the `orca terminal switch` command
+   that brings that terminal up in the desktop app, and keeps waiting (`ORCA_SETUP_REMOTE_TIMEOUT`, default 7200 s per
+   step).
+7. **Interactive logins** (step 4) are never run by provision.sh (`--auth-*` is refused). The summary lists the
+   counted items and every login the device's `--check --json` reports as pending, as `./setup.sh --auth-<name>`
+   lines to run in that terminal, plus `--auth-agy`, which `--check` cannot detect.
+
+`--role` accepts only `server`: this client dials the device, so the device holds the server role (§5.1). The exit
+code is the device's missing count for `--check` and `--apply` (capped at 99; 0 means ready), 0 for a finished
+`--plan`, 100 when it refused or failed before the device's check finished, and 2 for a usage error.
+
 ---
 
 ## 6. Implementation phases
@@ -451,7 +525,7 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | **P1 Linux baseline** | `pkg-debian.sh`, user-level npm/uv installs, PATH written to `~/.profile`/`~/.zshrc` | in Docker, `ubuntu:24.04` and `debian:12` run `--apply` twice successfully (idempotent); `--check` reports only auth items |
 | **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | accepted on CI (2026-10-24): containers install the `.deb` as a client; the runner VM runs the server unit with linger, reaches the runtime, re-runs as a no-op and counts only interactive logins. **Pending**: a real Linux x86_64 machine paired from a laptop client with `orca environment add`, then `worktree create --agent codex` remotely |
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | accepted on CI (2026-10-24) for everything that can run unattended: every Linux module has `--plan` output covered by bats, and `--apply` twice is a no-op the second time in ubuntu:24.04 / debian:12 containers (Docker Engine fresh install, media, android, gemini; `--power` and `--apple` skipped) and on the runner VM (`--power` masks the targets, the preinstalled Docker is left alone). **Pending**: the interactive logins (`--auth-gh` device code, `--auth-agy`, `--auth-linear`) on a real headless server; CI tests them with fakes only |
-| **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
+| **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements (`--check --json`, Orca's installed vs latest version) | implemented and covered by bats against a fake Orca server (2026-10-24); `--gpu` and `--check --json` also run in the Linux CI jobs. **Pending**: a laptop client provisioning a real Linux x86_64 server from "paired" to "all green except interactive auth" with `remote/provision.sh --apply` (§6.6) |
 
 ### 6.1 P0 port notes (differences from setup-mini.sh)
 
@@ -496,6 +570,48 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
   `github-release:<owner/repo>:<asset>:<command>` method replaces the P1 placeholder `github-release:<name>`, and the
   P1 placeholder `docker-apt-repo:` became ordinary `apt-repo:docker:<package>` rows.
 
+### 6.5 P4 notes (remote provisioning + extensions)
+
+- `remote/provision.sh` is new (§5.2); setup.sh is unchanged on the device except for `--check --json`.
+- `--gpu` is a Linux detection module (§3.5); on macOS it is skipped with a notice.
+- `--check --json` and the Orca version report are new in the audit (§3.6). Still open from §3.6: nothing; MCP and
+  cloud configuration were already covered by the `READINESS_JSON` audit.
+- The module and login lists moved to `lib/common.sh` (`ORCA_SETUP_MODULES`, `ORCA_SETUP_AUTHS`), so provision.sh
+  forwards exactly the modules setup.sh accepts.
+- CI does not provision a device end to end. Pairing a second, isolated client runtime with the runner VM's server
+  would need a pairing offer, which only `orca-ide serve` prints to its terminal: the CI job would have to capture a
+  live credential in its own process and files, where any failure path could print it into a public log. And
+  `project setup-clone` clones the public default branch, not the commit under test. Both are left to the real-device
+  session (§6.6).
+- Unverified against a real server (the bats fake follows the CLI's documented `--json` shapes): that
+  `project setup-clone` accepts the project id `github:vzxxbacq/orca-setup` for a fresh device, the `terminal read`
+  cursor semantics for a partial last line (a sudo prompt has no newline), and the terminal `status` values.
+
+### 6.6 Pending real-device acceptance (P2, P3, P4)
+
+Run in one session with a laptop as the control machine (client) and a real Linux x86_64 machine (Ubuntu 24.04 or
+Debian 12) as the new server; nothing here is covered by CI.
+
+1. **P2, server install** (in an SSH session on the server): clone the repository, then
+   `./setup.sh --apply --role server --pairing-address <private address>`; `./setup.sh --check` counts only the GitHub
+   login and the Orca Codex account.
+2. **P2, pairing**: create a link with the unit stopped (§3.3.2), save it on the laptop with
+   `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on the server, and
+   check `orca status --environment <server>` on the laptop. Confirm the journal holds no pairing URL.
+3. **P4, provisioning**: on the laptop, `remote/provision.sh --environment <server>` (plan only), then
+   `remote/provision.sh --environment <server> --apply --pairing-address <private address> --path <checkout from 1>`
+   (or `--destination <dir>` on a server set up without step 1). Expect the existing checkout to be verified, a sudo
+   hand-off message if sudo asks, only `PRESENT` lines from `--apply`, and an exit code equal to the pending logins.
+   Also try `--check`, `--gpu` on a machine with an NVIDIA GPU, and confirm that provision.sh refuses on the server
+   itself.
+4. **P3, logins** (in the Orca terminal provision.sh left open, or over SSH): `./setup.sh --auth-gh` (device code),
+   `--auth-codex`, `--auth-claude`, `--auth-linear` (into the server's Orca), and `--auth-agy`; then check whether
+   agy's sign-in survives a new SSH login without a desktop keyring (§9, open question 1).
+5. **P3, modules on hardware**: `--power` (sleep targets masked; the BIOS setting by hand) and `--containers`.
+6. **P2, remote work**: `orca worktree create --environment <server> --project <x> --agent codex ...` from the laptop;
+   also whether `computer-use` can drive an app under Xvfb on the headless server.
+7. **Done when** `remote/provision.sh --environment <server> --check` exits 0.
+
 ---
 
 ## 7. Test strategy
@@ -525,7 +641,20 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
   module's plan, the key fingerprint and release digest checks, the skip paths, headless detection and the auth
   modes run against fakes; the Linear key is typed on a pseudo-terminal (`tests/bats/pty.py`, only once echo is
   off) and must appear in no output and no file except what the fake Orca runtime received.
-- **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`.
+- **Remote provisioning** (`tests/bats/provision.bats`): a fake Orca CLI plays this machine's pairing store and one
+  paired server whose terminal runs each command for real in a git checkout cloned from a local bare repository
+  (standing in for the public one through git's `insteadOf`), with a stub `setup.sh`. It covers the role refusal on a
+  server host (before any server is asked), a host without environments and a dual role, unknown and unreachable
+  environments, `setup-clone` versus an existing checkout (wrong origin, local changes, behind its upstream with and
+  without `--fast-forward`, `--path`), the plan-only default, the apply order, the sudo hand-off message, the exit
+  code from the device's `--check --json`, an old device without `--check --json`, and that no output carries the
+  pairing secret the fake replies hold.
+- **`--gpu`** (`tests/bats/gpu.bats`) runs against a fake sysfs tree, `/proc`, `lspci`, `nvidia-smi` and `nvcc`;
+  **`--check --json`** (`tests/bats/check-json.bats`) checks the schema, the exit code, the Orca version report and,
+  with seeded secrets, that no credential value appears.
+- **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`. The Linux
+  jobs also pass `--gpu` (the runners have no NVIDIA GPU) and check that `--check --json` reports the same missing
+  count as `--check`. Remote provisioning is not run end to end in CI (§6.5).
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
   The bats fake of `orca-ide status` carries a pairing URL, and every Linux Orca test asserts it never reaches the output.
@@ -550,6 +679,9 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | No public CLI lists the runtime clients paired with a host, so `orca/role.sh` reads Orca's device registry file | read only scope/name/last-seen; never print tokens; fail closed (`ROLE unknown`) when the file does not parse or has an unexpected shape; covered by bats tests with fake registries; switch to a CLI once one exists |
 | Dual pairing roles corrupt editor tabs across hosts | `--role` is mandatory for `--apply`; preflight refuses a dual role (§5.1) |
 | Private details leak into the public repository | local overlay for anything organization-specific; CI leak check (§7) |
+| `remote/provision.sh` depends on the CLI's `--json` shapes (`environment show`, `project setups`, `project setup-clone`, `terminal create/read`) and reads command results from terminal output | public CLI only; each step's end is a marker line with a per-step nonce, and the device's report is JSON (`--check --json`), not text; a device without it is reported, not guessed; real-device acceptance pending (§6.6) |
+| A password or pairing code passes through provision.sh | it never asks for one: sudo is answered by the user in the device's Orca terminal, `--auth-*` is refused, and the environment and status replies are never printed; bats asserts the fake replies' pairing secret never reaches the output |
+| provision.sh runs an old or modified checkout on the device | the origin must be this repository; local changes are never touched; `--apply` refuses a checkout behind its upstream unless `--fast-forward` (fast-forward only) |
 
 ---
 
@@ -581,6 +713,9 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Docker on Linux | Docker Engine from Docker's apt repository, key fingerprint `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`; a foreign Docker or Podman is left alone (§3.5) |
 | Android tools on Linux | the distributions' `android-sdk-platform-tools` (older than Google's zip); skipped with a pointer to the zip where apt lacks it |
 | P3 acceptance | accepted on CI; the interactive logins on a real headless server are pending (§6) |
+| Remote provisioning | `remote/provision.sh` on the client, through the public Orca CLI only (setup-clone or an existing checkout, an Orca terminal, `--check --json`); read-only by default; never handles passwords or runs `--auth-*` (§5.2) |
+| GPU module | `--gpu`: NVIDIA detection on Linux only, never installs; counts a missing driver next to an NVIDIA GPU (§3.5) |
+| P4 acceptance | covered by bats against a fake server; a laptop client provisioning a real Linux server is pending (§6.6). CI does not pair a second runtime, so no pairing secret exists in CI (§6.5) |
 
 **Open**
 
@@ -592,6 +727,8 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 3. P2 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
    `--apply --role server`, then `orca worktree create --environment <server> --agent codex` from the client; also
    check whether `computer-use` can drive an app under Xvfb on a headless server.
+4. P4 real-device acceptance (pending): `remote/provision.sh --apply` from a laptop client to that server, including
+   the unverified CLI details listed in §6.5. All pending items are collected in §6.6.
 
 ---
 

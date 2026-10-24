@@ -7,6 +7,7 @@
 #   linux.sh server   directly on a GitHub-hosted Ubuntu 24.04 runner VM (systemd), as the runner user:
 #                     --apply --role server also enables linger and starts the orca-serve user unit, masks the sleep
 #                     targets (--power), and leaves the runner's preinstalled Docker alone (--containers).
+# Both also pass --gpu (detection only; the runners have no NVIDIA GPU).
 #
 # Both modes then check that a second --apply changes nothing (no step lines, same packages, apt sources,
 # keyrings, dotfiles and unit), that a login shell finds the user-level tools, that orca-ide runs, that no output
@@ -29,8 +30,8 @@ case "$mode" in
     export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} ;;
   *) fail 'usage: linux.sh client|server' ;;
 esac
-if [ "$mode" = client ]; then modules=(--power --containers --apple --android --media --agent-gemini)
-else modules=(--power --containers); fi
+if [ "$mode" = client ]; then modules=(--power --containers --apple --android --media --agent-gemini --gpu)
+else modules=(--power --containers --gpu); fi
 args=(--apply --role "$mode" "${modules[@]}")
 [ "$mode" = client ] || args+=(--pairing-address 127.0.0.2)
 unit=$HOME/.config/systemd/user/orca-serve.service
@@ -172,4 +173,14 @@ if [ "$mode" = client ]; then expected='GitHub auth: PENDING'
 else expected=$'GitHub auth: PENDING\nOrca Codex: PENDING'; fi
 [ "$counted" = "$expected" ] || fail "--check counts more than interactive authentication: $counted"
 [ "$status" -eq "$(grep -c . <<<"$expected")" ] || fail "--check exit code $status"
+grep -qx 'NVIDIA GPU: none found (not counted)' "$work/check.log" || fail '--check --gpu did not report the (absent) GPU'
+
+echo '::group::--check --json'
+json_status=0
+"$repo/setup.sh" --check --json --role "$mode" "${modules[@]}" >"$work/check.json" || json_status=$?
+node "$repo/lib/json.cjs" check-summary <"$work/check.json" | tee "$work/check-summary.txt" || fail '--check --json is not a check report'
+echo '::endgroup::'
+no_pairing_secret "$work/check.json"
+[ "$json_status" -eq "$status" ] || fail "--check --json exit code $json_status differs from --check ($status)"
+grep -qx "missing $status" "$work/check-summary.txt" || fail '--check --json does not report the same missing count'
 echo "PASS ($mode): --apply is idempotent, Orca runs, and --check reports only interactive authentication"

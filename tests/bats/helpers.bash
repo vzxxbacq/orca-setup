@@ -115,6 +115,7 @@ case "$1 $2" in
   "skills installed") echo "{\"ok\":true,\"result\":{\"skills\":[{\"name\":\"orca-cli\"},{\"name\":\"orca-linear\"}]}}" ;;
   "skills install") case " $* " in *" --dry-run "*) installed=$SB/mac-skills; printf "orca-cli\norca-linear\n" >"$installed"; '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca $*" >>"$FAKE_LOG" ;; esac ;;
   "status --json") echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true}}}" ;;
+  "--version "*) echo 1.2.3 ;;
   *) echo "orca $*" >>"$FAKE_LOG" ;;
 esac'
 }
@@ -197,6 +198,7 @@ case "$1 $2" in
   "skills install")
     installed=$SB/orca-skills
     case " $* " in *" --dry-run "*) '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca-ide $*" >>"$FAKE_LOG"; prev=""; for a; do [ "$prev" = --skill ] && echo "$a" >>"$installed"; prev=$a; done ;; esac ;;
+  "--version "*) echo 1.2.3 ;;
   "status --json")
     [ -e "$SB/runtime-up" ] || { echo "{\"ok\":false}"; exit 1; }
     echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true},\"pairing\":{\"url\":\"orca://pair?code=FAKE-PAIRING-SECRET\"}}}" ;;

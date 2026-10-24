@@ -5,6 +5,13 @@
 ORCA_SETUP_ROOT=${ORCA_SETUP_ROOT:-$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}
 ORCA_SETUP_MANIFEST_DIR=${ORCA_SETUP_MANIFEST_DIR:-$ORCA_SETUP_ROOT/manifest}
 
+# Optional modules and interactive logins setup.sh accepts (--<module>, --auth-<name>); remote/provision.sh
+# forwards the same modules.
+# shellcheck disable=SC2034 # read by the scripts that source this file
+ORCA_SETUP_MODULES='power containers apple android media agent-gemini gpu'
+# shellcheck disable=SC2034
+ORCA_SETUP_AUTHS='gh codex claude agy linear'
+
 info() { printf '%s\n' "$*"; }
 warn() { printf 'WARNING: %s\n' "$*" >&2; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -16,6 +23,14 @@ step() {
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# json_string <text>: the text as a JSON string literal; control characters become "?".
+json_string() {
+  local text=${1//\\/\\\\}
+  text=${text//\"/\\\"}
+  text=${text//[$'\001'-$'\037']/?}
+  printf '"%s"' "$text"
+}
 
 require_non_root() {
   [ "$(id -u)" -ne 0 ] || die 'Run as your regular user, without sudo.'

@@ -24,20 +24,22 @@ for file in "$ORCA_SETUP_ROOT"/modules/*.sh "$ORCA_SETUP_ROOT"/auth/*.sh; do
   . "$file"
 done
 
-MODULES='power containers apple android media agent-gemini'
-AUTHS='gh codex claude agy linear'
+MODULES=$ORCA_SETUP_MODULES
+AUTHS=$ORCA_SETUP_AUTHS
 TASK_SOURCES='linear'
 
 usage() {
   cat <<'EOF'
-Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [--pairing-address ADDRESS] [modules]
-                  [--task-source linear]
+Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [--pairing-address ADDRESS]
+                  [modules] [--task-source linear]
        ./setup.sh --auth-gh | --auth-codex | --auth-claude | --auth-agy | --auth-linear
 
   --plan         Print what --apply would do on this device (default; read-only).
   --apply        Install missing baseline tools and agents, install Orca skills, align Orca defaults,
                  then run the selected modules. Requires --role.
   --check        Read-only readiness report; the exit code is the number of missing items.
+  --json         With --check: print the report as one JSON document instead (names, states, counts and
+                 versions only, never credential values); the exit code is the same.
   --role R       Pairing role of this device: client (dials servers) or server (is dialed).
   --pairing-address ADDRESS
                  Linux servers: the private IPv4 address or host name clients dial (Tailscale, LAN,
@@ -46,7 +48,7 @@ Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [--pairing
                  Also make Linear Orca's task source (--apply), and require it to be connected (--check).
 
 Optional modules (installed only together with --apply; --check also checks the ones given):
-  --power --containers --apple --android --media --agent-gemini
+  --power --containers --apple --android --media --agent-gemini --gpu
 
 Interactive authentication (run one or more on their own):
   --auth-gh --auth-codex --auth-claude --auth-agy --auth-linear
@@ -61,6 +63,7 @@ pairing_address=''
 task_source=''
 modules=''
 auths=''
+check_json=no
 
 set_action() {
   [ -z "$action" ] || [ "$action" = "$1" ] || die "choose only one of --plan, --apply, --check and --auth-*"
@@ -72,6 +75,7 @@ while [ $# -gt 0 ]; do
     --plan) set_action plan ;;
     --apply) set_action apply ;;
     --check) set_action check ;;
+    --json) check_json=yes ;;
     --role | --role=*)
       if [ "$1" = --role ]; then [ $# -ge 2 ] || die '--role needs client or server'; role=$2; shift; else role=${1#--role=}; fi
       case "$role" in client | server) ;; *) die "--role must be client or server, not: $role" ;; esac ;;
@@ -100,6 +104,7 @@ modules=${modules# }
 auths=${auths# }
 [ "$action" != auth ] || [ -z "$modules" ] || die "modules run only with --apply (or show with --plan, or check with --check): $modules"
 [ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (README section 5.1).'
+[ "$check_json" = no ] || [ "$action" = check ] || die '--json works only with --check.'
 
 require_non_root
 setup_environment
@@ -224,12 +229,13 @@ process_path_block() {
   for file in $(path_block_files); do
     if path_block_present "$HOME/$file"; then
       case "$1" in plan) printf '  present  PATH block in ~/%s\n' "$file" ;; *) printf 'PRESENT PATH block in ~/%s\n' "$file" ;; esac
+      [ "$1" != check ] || record 0 "PATH block in ~/$file" present
       continue
     fi
     case "$1" in
       plan) printf '  add      PATH block in ~/%-11s puts ~/.local/bin and ~/.grok/bin on PATH (marked block)\n' "$file" ;;
       apply) path_block_add "$HOME/$file" ;;
-      check) printf 'MISSING PATH block in ~/%s\n' "$file"; missing=$((missing + 1)) ;;
+      check) printf 'MISSING PATH block in ~/%s\n' "$file"; missing=$((missing + 1)); record 1 "PATH block in ~/$file" MISSING ;;
     esac
   done
 }
@@ -463,17 +469,34 @@ do_apply() {
 # ---------------------------------------------------------------- check
 
 missing=0
+# Every reported item, for --check --json: "counted<TAB>label<TAB>state" (counted is 1 or 0).
+CHECK_ITEMS=()
+# Interactive logins: "name<TAB>state<TAB>counted"; versions: "tool<TAB>version".
+CHECK_AUTH=()
+CHECK_VERSIONS=()
+AUDIT_LINE=''
+
+# record <counted> <label> <state>: remember one item for --check --json.
+record() { CHECK_ITEMS+=("$1"$'\t'"$2"$'\t'"$3"); }
+
 # report <state> <label>: print "label: state"; PENDING, MISSING, UNREACHABLE, CONFLICT, INACTIVE and OFF states
 # count as missing.
 report() {
+  local counted=0
   printf '%s: %s\n' "$2" "$1"
-  case "$1" in PENDING* | MISSING* | CONFLICT* | UNREACHABLE* | INACTIVE* | OFF*) missing=$((missing + 1)) ;; esac
+  case "$1" in PENDING* | MISSING* | CONFLICT* | UNREACHABLE* | INACTIVE* | OFF*) missing=$((missing + 1)); counted=1 ;; esac
+  record "$counted" "$2" "$1"
 }
+
+# auth_state <name> <complete|pending|not-selected|not-connected> <counted 1|0>: an interactive login's state; the name
+# is the setup.sh --auth-<name> that completes it.
+auth_state() { CHECK_AUTH+=("$1"$'\t'"$2"$'\t'"$3"); }
 
 check_tools() { # check_tools <manifest> <group>
   local name check method
   while IFS=$'\t' read -r name check method; do
-    if row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); fi
+    if row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; record 0 "$name" present
+    else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); record 1 "$name" MISSING; fi
   done < <(platform_rows "$1" "$2")
 }
 
@@ -483,12 +506,43 @@ check_versions() {
     have "$tool" || continue
     version=$("$tool" --version 2>/dev/null | head -n 1) || version=unknown
     printf 'VERSION %s %s\n' "$tool" "$version"
+    CHECK_VERSIONS+=("$tool"$'\t'"$version")
   done
+}
+
+# orca_release_repo: the GitHub repository Orca's Linux .deb comes from (manifest/baseline.tsv).
+orca_release_repo() {
+  manifest_select baseline.tsv debian baseline | awk -F'\t' '$1 == "orca" { split($3, part, ":"); print part[2] }'
+}
+
+# check_orca_version: the installed Orca version and the latest stable release. Reported, never counted, and
+# never acted on: setup.sh does not upgrade Orca (README section 3.3.1).
+check_orca_version() {
+  local installed available repo
+  installed=$("$ORCA_CLI" --version 2>/dev/null | grep -Eo '[0-9]+[.][0-9]+[.][0-9]+[^ ]*' | head -n 1) || installed=''
+  available=''
+  repo=$(orca_release_repo)
+  if [ -n "$repo" ] && have curl && have node; then
+    available=$(curl -q -fsS --connect-timeout 5 --max-time 15 -H 'Accept: application/vnd.github+json' \
+      "$GITHUB_API/repos/$repo/releases/latest" 2>/dev/null | json get tag_name 2>/dev/null) || available=''
+    available=${available#v}
+    [[ "$available" =~ ^[0-9]+[.][0-9]+[.][0-9]+[^[:space:]]*$ ]] || available=''
+  fi
+  installed=${installed:-unknown}
+  available=${available:-unknown}
+  if [ "$installed" != unknown ] && [ "$available" != unknown ] && [ "$installed" != "$available" ]; then
+    printf 'VERSION orca %s (latest release %s; reported only, setup.sh never upgrades Orca)\n' "$installed" "$available"
+  else
+    printf 'VERSION orca %s (latest release %s)\n' "$installed" "$available"
+  fi
+  CHECK_VERSIONS+=("orca"$'\t'"$installed" "orca-latest"$'\t'"$available")
 }
 
 check_orca() {
   local status accounts settings lines targets skills reachable=yes
-  if have "$ORCA_CLI"; then printf 'PRESENT orca CLI (%s)\n' "$(basename "$ORCA_CLI")"; else printf 'MISSING orca CLI\n'; missing=$((missing + 1)); return 0; fi
+  if have "$ORCA_CLI"; then printf 'PRESENT orca CLI (%s)\n' "$(basename "$ORCA_CLI")"; record 0 'orca CLI' present
+  else printf 'MISSING orca CLI\n'; missing=$((missing + 1)); record 1 'orca CLI' MISSING; return 0; fi
+  check_orca_version
   if [ "$PLATFORM" = debian ] && [ "$(linux_role)" = server ]; then serve_check; fi
   if status=$("$ORCA_CLI" status --json 2>/dev/null) && printf '%s' "$status" | json has result.runtime.reachable; then
     report reachable 'Orca runtime'
@@ -506,10 +560,13 @@ check_orca() {
   fi
   [ "$reachable" = yes ] || return 0
   if accounts=$(orca_rpc accounts.list); then
-    if printf '%s' "$accounts" | json has codex.activeAccountId; then report selected 'Orca Codex'; else report PENDING 'Orca Codex'; fi
-    if printf '%s' "$accounts" | json has claude.activeAccountId; then report selected 'Orca Claude'; else report 'not selected' 'Orca Claude'; fi
+    if printf '%s' "$accounts" | json has codex.activeAccountId; then report selected 'Orca Codex'; auth_state codex complete 0
+    else report PENDING 'Orca Codex'; auth_state codex pending 1; fi
+    if printf '%s' "$accounts" | json has claude.activeAccountId; then report selected 'Orca Claude'; auth_state claude complete 0
+    else report 'not selected' 'Orca Claude'; auth_state claude not-selected 0; fi
   else
     report 'PENDING (accounts.list failed)' 'Orca accounts'
+    auth_state codex pending 1
   fi
   if settings=$(orca_rpc settings.get); then
     lines=$(printf '%s' "$settings" | json get settings | json diff "$(desired_settings)" | tr '\n' ' ')
@@ -517,9 +574,9 @@ check_orca() {
     if [ -z "$lines" ]; then report aligned 'Orca settings'; else report "differs (${lines}); --apply aligns them" 'Orca settings'; fi
   fi
   if [ "$task_source" = linear ] || [ "$(printf '%s' "${settings:-}" | json get settings.defaultTaskSource 2>/dev/null)" = linear ]; then
-    if orca_rpc linear.status | json has connected; then report connected 'Linear'
-    elif [ "$task_source" = linear ]; then report PENDING 'Linear'
-    else report 'not connected (task source is linear; add --task-source linear to require it)' 'Linear'; fi
+    if orca_rpc linear.status | json has connected; then report connected 'Linear'; auth_state linear complete 0
+    elif [ "$task_source" = linear ]; then report PENDING 'Linear'; auth_state linear pending 1
+    else report 'not connected (task source is linear; add --task-source linear to require it)' 'Linear'; auth_state linear not-connected 0; fi
   fi
 }
 
@@ -531,10 +588,12 @@ check_module() {
 }
 
 # The role check reads local pairing stores, so it runs even when the Orca runtime is unreachable.
+DETECTED_ROLE=unknown
 check_role() {
   local role_output role_status=0
   if [ -n "$role" ]; then role_output=$(bash "$ORCA_SETUP_ROOT/orca/role.sh" --expect "$role") || role_status=$?
   else role_output=$(bash "$ORCA_SETUP_ROOT/orca/role.sh") || role_status=$?; fi
+  DETECTED_ROLE=$(printf '%s\n' "$role_output" | sed -n '1s/^ROLE //p')
   printf '%s\n' "$role_output" | sed '1s/^ROLE /Pairing role: /'
   case "$role_status" in
     0) ;;
@@ -543,20 +602,71 @@ check_role() {
   esac
 }
 
-do_check() {
+check_body() {
   local name
-  [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
   info "Device: $(detect_distro) $ARCH, package manager: $(detect_pkg_manager), Orca CLI: $ORCA_CLI"
   check_tools baseline.tsv baseline
   check_tools agents.tsv baseline
   if [ "$PLATFORM" = debian ]; then process_path_block check; fi
   for name in $modules; do check_module "$name"; done
   check_versions
-  if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; else report PENDING 'GitHub auth'; fi
+  if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; auth_state gh complete 0
+  else report PENDING 'GitHub auth'; auth_state gh pending 1; fi
   check_orca
   check_role
-  if have node; then node "$ORCA_SETUP_ROOT/audit/readiness.cjs" || report 'MISSING (audit failed)' 'Readiness audit'; fi
-  info "MISSING_ITEMS $missing"
+  if have node; then
+    if AUDIT_LINE=$(node "$ORCA_SETUP_ROOT/audit/readiness.cjs"); then printf '%s\n' "$AUDIT_LINE"
+    else AUDIT_LINE=''; report 'MISSING (audit failed)' 'Readiness audit'; fi
+  fi
+}
+
+# print_check_json: the report as one JSON document. Labels, states, names, counts and versions only; the audit is
+# the READINESS_JSON object, which holds names and booleans only.
+print_check_json() {
+  local entry counted label state name value audit sep
+  audit=${AUDIT_LINE#READINESS_JSON }
+  [ -n "$audit" ] || audit=null
+  printf '{\n  "schema": "orca-setup-check/1",\n'
+  printf '  "device": {"os": %s, "distro": %s, "arch": %s},\n' "$(json_string "$OS")" "$(json_string "$(detect_distro)")" "$(json_string "$ARCH")"
+  printf '  "role": {"requested": %s, "detected": %s},\n' "$(if [ -n "$role" ]; then json_string "$role"; else echo null; fi)" "$(json_string "${DETECTED_ROLE:-unknown}")"
+  printf '  "modules": ['
+  sep=''
+  for name in $modules; do printf '%s%s' "$sep" "$(json_string "$name")"; sep=', '; done
+  printf '],\n  "missing": %s,\n  "items": [' "$missing"
+  sep=''
+  for entry in ${CHECK_ITEMS[@]+"${CHECK_ITEMS[@]}"}; do
+    IFS=$'\t' read -r counted label state <<<"$entry"
+    printf '%s\n    {"name": %s, "state": %s, "counted": %s}' "$sep" "$(json_string "$label")" "$(json_string "$state")" \
+      "$(if [ "$counted" = 1 ]; then echo true; else echo false; fi)"
+    sep=','
+  done
+  printf '\n  ],\n  "auth": ['
+  sep=''
+  for entry in ${CHECK_AUTH[@]+"${CHECK_AUTH[@]}"}; do
+    IFS=$'\t' read -r name state counted <<<"$entry"
+    printf '%s\n    {"name": %s, "state": %s, "counted": %s}' "$sep" "$(json_string "$name")" "$(json_string "$state")" \
+      "$(if [ "$counted" = 1 ]; then echo true; else echo false; fi)"
+    sep=','
+  done
+  printf '\n  ],\n  "versions": {'
+  sep=''
+  for entry in ${CHECK_VERSIONS[@]+"${CHECK_VERSIONS[@]}"}; do
+    IFS=$'\t' read -r name value <<<"$entry"
+    printf '%s%s: %s' "$sep" "$(json_string "$name")" "$(json_string "$value")"
+    sep=', '
+  done
+  printf '},\n  "audit": %s\n}\n' "$audit"
+}
+
+do_check() {
+  [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
+  if [ "$check_json" = yes ]; then
+    check_body >/dev/null
+    print_check_json
+  else
+    check_body
+    info "MISSING_ITEMS $missing"
+  fi
   [ "$missing" -le 255 ] || missing=255
   exit "$missing"
 }
