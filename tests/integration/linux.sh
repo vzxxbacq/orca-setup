@@ -71,8 +71,9 @@ diff -u "$work/state-1" "$work/state-2" || fail 'the second --apply changed the 
 [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.zshrc")" -eq 1 ] || fail 'the PATH block must appear once in .zshrc'
 
 echo '::group::login shell PATH'
+# The system PATH a login gets from /etc/environment; the runner keeps its preinstalled Node.js in /usr/local/bin.
 # shellcheck disable=SC2016 # expanded by the login shell
-env -i HOME="$HOME" USER="$USER" PATH=/usr/bin:/bin bash -lc \
+env -i HOME="$HOME" USER="$USER" PATH=/usr/local/bin:/usr/bin:/bin bash -lc \
   'for tool in node npm pnpm uv python3.12 ruff codex claude dsh dsh-tui pi bun omp grok agy gh orca-ide; do command -v "$tool" || exit 1; done
    for tool in node pnpm uv python3.12 ruff gh bun; do "$tool" --version || exit 1; done' ||
   fail 'a login shell does not find or cannot run the user-level tools'
