@@ -190,11 +190,11 @@ apply_ready() {
 @test "a missing check command falls back to dpkg; a - check uses dpkg only" {
   . "$REPO_ROOT/lib/common.sh"
   . "$REPO_ROOT/lib/pkg-debian.sh"
-  ! debian_installed apt:ca-certificates
+  run ! debian_installed apt:ca-certificates
   echo ca-certificates >>"$FAKE_DPKG"
   debian_installed apt:ca-certificates
   debian_installed apt-repo:nodesource:ca-certificates
-  ! debian_installed npm:ca-certificates
+  run ! debian_installed npm:ca-certificates
 }
 
 # ------------------------------------------------------------------ fingerprints
@@ -211,10 +211,10 @@ apply_ready() {
   [ "$(key_fingerprints "$SB/both")" = "$(printf '%s\n' 2C6106201985B60E6C7AC87323F3D4EA75716059 7F38BBB59D064DBCB3D84D725612B36462313325)" ]
   key_matches "$SB/one" "$GH_FPRS"
   key_matches "$SB/both" "$GH_FPRS"
-  ! key_matches "$SB/extra" "$GH_FPRS"
-  ! key_matches "$SB/empty" "$GH_FPRS"
-  ! key_matches "$SB/garbage" "$GH_FPRS"
-  ! key_matches "$SB/one" 7F38BBB59D064DBCB3D84D725612B36462313325
+  run ! key_matches "$SB/extra" "$GH_FPRS"
+  run ! key_matches "$SB/empty" "$GH_FPRS"
+  run ! key_matches "$SB/garbage" "$GH_FPRS"
+  run ! key_matches "$SB/one" 7F38BBB59D064DBCB3D84D725612B36462313325
 }
 
 @test "key_matches with real gpg and a generated key" {
@@ -236,7 +236,7 @@ apply_ready() {
   [ "$status" -eq 0 ]
   [ "$(key_fingerprints "$SB/test.asc")" = "$fpr" ]
   key_matches "$SB/test.asc" "AAAA,$fpr"
-  ! key_matches "$SB/test.asc" "$GH_FPRS"
+  run ! key_matches "$SB/test.asc" "$GH_FPRS"
 }
 
 # ------------------------------------------------------------------ PATH block

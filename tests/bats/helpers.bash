@@ -2,6 +2,9 @@
 # Shared fixtures: every test runs in a sandbox whose PATH holds only a few real utilities plus fakes,
 # so results never depend on what the machine running the tests has installed.
 
+# `run !` (expect failure) needs bats 1.5; a bare `! cmd` never fails a test.
+bats_require_minimum_version 1.5.0
+
 REPO_ROOT=$(CDPATH='' cd -- "$BATS_TEST_DIRNAME/../.." && pwd)
 REAL_BASH=$(command -v bash)
 # shellcheck disable=SC2034 # used by the test files

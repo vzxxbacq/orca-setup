@@ -122,9 +122,9 @@ setup() {
   fake_present b
   is_present b
   is_present 'a|b'
-  ! is_present 'a|c'
+  run ! is_present 'a|c'
   is_present -
-  ! is_present app:Thing
+  run ! is_present app:Thing
   mkdir "$SB/Applications/Thing.app"
   is_present app:Thing
   is_present 'missing|app:Thing'
