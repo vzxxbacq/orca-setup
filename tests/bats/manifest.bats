@@ -127,7 +127,37 @@ use_copy() {
   done
   [ "$(manifest_rows apt-repos.tsv | cut -f1,2)" = "$(printf '%s\t%s\n' \
     gh https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-    nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key)" ]
+    nodesource https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    docker 'https://download.docker.com/linux/{distro}/gpg')" ]
+  # Docker's key, as printed in Docker's own Ubuntu and Debian install guides.
+  [ "$(manifest_rows apt-repos.tsv | awk -F'\t' '$1 == "docker" { print $3 }')" = 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 ]
+}
+
+@test "optional modules: every Linux method is known, and apt-conflicts.tsv names known repositories" {
+  run bash -c "cat '$REPO_ROOT/manifest/baseline.tsv' '$REPO_ROOT/manifest/agents.tsv' | awk -F'\t' '!/^[[:space:]]*(#|\$)/ && \$3 != \"baseline\" && \$5 !~ /^(apt|apt-repo|npm|github-release):[^:]/ && \$5 != \"-\" { print }'"
+  [ -z "$output" ]
+  run manifest_select baseline.tsv debian media
+  [[ "$output" == *$'marksman\tmarksman\tgithub-release:artempyanykh/marksman:marksman-linux-x64:marksman'* ]]
+  [ "$(manifest_select baseline.tsv debian containers | cut -f3 | paste -sd ' ' -)" = \
+    'apt-repo:docker:docker-ce apt-repo:docker:docker-ce-cli apt-repo:docker:containerd.io apt-repo:docker:docker-buildx-plugin apt-repo:docker:docker-compose-plugin' ]
+  [ -z "$(manifest_select baseline.tsv debian apple)" ]
+  # macOS keeps one Docker row: Docker Desktop.
+  [ "$(manifest_select baseline.tsv macos containers | cut -f3)" = cask:docker-desktop ]
+  local repo
+  for repo in $(manifest_rows apt-conflicts.tsv | cut -f1); do
+    manifest_rows apt-repos.tsv | cut -f1 | grep -qx "$repo"
+  done
+  [[ "$(manifest_rows apt-conflicts.tsv | awk -F'\t' '$1 == "docker" { print $2 }')" == *'docker.io'*'podman-docker'*'podman'* ]]
+}
+
+@test "apt_repo_row fills in the distribution and its release code name" {
+  . "$REPO_ROOT/lib/detect.sh"
+  . "$REPO_ROOT/lib/pkg-debian.sh"
+  fake_os_release ubuntu 24.04 debian
+  [ "$(apt_repo_row docker | cut -f2,6,7 | tr '\t' ' ')" = 'https://download.docker.com/linux/ubuntu/gpg https://download.docker.com/linux/ubuntu noble' ]
+  fake_os_release debian 12
+  [ "$(apt_repo_row docker | cut -f2,6,7 | tr '\t' ' ')" = 'https://download.docker.com/linux/debian/gpg https://download.docker.com/linux/debian bookworm' ]
+  [ "$(apt_repo_row gh | cut -f7)" = stable ]
 }
 
 @test "Debian install order: apt, repositories, installers, npm, then uv-managed tools" {

@@ -2,9 +2,11 @@
 # Linux integration test, prepared by .github/workflows/ci.yml; never run it on a real machine.
 #
 #   linux.sh client   inside a fresh ubuntu:24.04 or debian:12 container (no systemd), as a non-root user with
-#                     passwordless sudo: --apply --role client installs the baseline and the Orca .deb;
+#                     passwordless sudo: --apply --role client installs the baseline and the Orca .deb, plus every
+#                     optional module (Docker Engine on its fresh-install path; --power and --apple are skipped);
 #   linux.sh server   directly on a GitHub-hosted Ubuntu 24.04 runner VM (systemd), as the runner user:
-#                     --apply --role server also enables linger and starts the orca-serve user unit.
+#                     --apply --role server also enables linger and starts the orca-serve user unit, masks the sleep
+#                     targets (--power), and leaves the runner's preinstalled Docker alone (--containers).
 #
 # Both modes then check that a second --apply changes nothing (no step lines, same packages, apt sources,
 # keyrings, dotfiles and unit), that a login shell finds the user-level tools, that orca-ide runs, that no output
@@ -27,7 +29,9 @@ case "$mode" in
     export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)} ;;
   *) fail 'usage: linux.sh client|server' ;;
 esac
-args=(--apply --role "$mode")
+if [ "$mode" = client ]; then modules=(--power --containers --apple --android --media --agent-gemini)
+else modules=(--power --containers); fi
+args=(--apply --role "$mode" "${modules[@]}")
 [ "$mode" = client ] || args+=(--pairing-address 127.0.0.2)
 unit=$HOME/.config/systemd/user/orca-serve.service
 
@@ -41,12 +45,24 @@ state() {
   sha256sum /etc/apt/keyrings/* /etc/apt/sources.list.d/* "$HOME/.profile" "$HOME/.zshrc" "$HOME/.bash_profile" "$unit" \
     2>/dev/null || true
   ls /var/lib/systemd/linger 2>/dev/null || true
+  id -nG "$USER"
+  ls -l /etc/systemd/system/*.target 2>/dev/null || true
 }
 
 # Pairing offers look like orca://pair?code=...; fail without printing the match.
 no_pairing_secret() {
   if grep -qiE 'orca://pair|[?&#]code=' "$@"; then fail "a pairing URL or code appeared in: $*"; fi
 }
+
+# The Docker install the runner image ships (server mode): packages, apt sources and the docker group.
+docker_state() {
+  # shellcheck disable=SC2016 # dpkg-query format fields
+  dpkg-query -W -f '${Package} ${Version}\n' | grep -Ei 'docker|containerd|moby|runc|podman' || true
+  ls /etc/apt/sources.list.d /etc/apt/keyrings 2>/dev/null || true
+  getent group docker || true
+  docker --version 2>/dev/null || true
+}
+[ "$mode" = client ] || docker_state >"$work/docker-before"
 
 echo '::group::first --apply'
 "$repo/setup.sh" "${args[@]}" 2>&1 | tee "$work/first.log"
@@ -63,8 +79,8 @@ if grep -n '^+ ' "$work/second.log"; then
   [ ! -e "$work/unit-1" ] || diff -u "$work/unit-1" "$unit" || true
   fail 'the second --apply ran steps'
 fi
-# Only PRESENT items, skipped items and the pairing role report are allowed.
-if grep -vE '^(PRESENT |SKIP |ROLE |saved environments: |runtime clients |mobile pairings: |BASELINE_DONE$)' "$work/second.log"; then
+# Only PRESENT items, skipped items, module headers, notes and the pairing role report are allowed.
+if grep -vE '^(PRESENT |SKIP |MODULE |NOTE |ROLE |saved environments: |runtime clients |mobile pairings: |BASELINE_DONE$)' "$work/second.log"; then
   fail 'the second --apply printed more than PRESENT lines'
 fi
 diff -u "$work/state-1" "$work/state-2" || fail 'the second --apply changed the system'
@@ -113,9 +129,40 @@ else
 fi
 echo '::endgroup::'
 
+echo '::group::optional modules'
+if [ "$mode" = client ]; then
+  grep -qx 'SKIP module power: systemd is not the init system here (a container?), so there are no sleep targets to mask' "$work/first.log" ||
+    fail '--power must be skipped in a container'
+  grep -q '^SKIP module apple: not applicable on Linux' "$work/first.log" || fail '--apple must be skipped on Linux'
+  # Docker Engine, fresh install from Docker's repository (no daemon runs in this container).
+  grep -qx 'deb \[arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg\] https://download.docker.com/linux/[a-z]* [a-z]* stable' \
+    /etc/apt/sources.list.d/docker.list || fail 'the Docker source list is not the expected one'
+  dpkg-query -W -f '${Package} ${Version}\n' docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin ||
+    fail 'Docker Engine is not installed'
+  docker --version || fail 'docker does not run'
+  id -nG "$USER" | tr ' ' '\n' | grep -qx docker || fail "$USER is not in the docker group"
+  grep -qx 'NOTE log out and back in (a new login) before using docker without sudo' "$work/first.log" ||
+    fail 'no new-login notice for the docker group'
+  for tool in pdftotext ffmpeg 7z adb gemini; do command -v "$tool" || fail "$tool is missing"; done
+  [ -x "$HOME/.local/bin/marksman" ] || fail 'marksman is not in ~/.local/bin'
+  "$HOME/.local/bin/marksman" --version || fail 'marksman does not run'
+  adb version || fail 'adb does not run'
+  gemini --version || fail 'gemini does not run'
+else
+  for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
+    [ "$(systemctl is-enabled "$target" 2>/dev/null || true)" = masked ] || fail "$target is not masked"
+  done
+  grep -q '^NOTE restart after power loss is a BIOS/UEFI setting' "$work/second.log" || fail 'no BIOS reminder'
+  # The runner image ships Docker: --containers must leave it, its packages and its apt sources alone.
+  grep -q "^SKIP module containers: .* it is left alone$" "$work/first.log" || fail '--containers did not leave the existing Docker alone'
+  docker_state >"$work/docker-after"
+  diff -u "$work/docker-before" "$work/docker-after" || fail '--containers changed the existing Docker install'
+fi
+echo '::endgroup::'
+
 echo '::group::--check'
 status=0
-"$repo/setup.sh" --check --role "$mode" >"$work/check.log" 2>&1 || status=$?
+"$repo/setup.sh" --check --role "$mode" "${modules[@]}" >"$work/check.log" 2>&1 || status=$?
 cat "$work/check.log"
 echo '::endgroup::'
 no_pairing_secret "$work/first.log" "$work/second.log" "$work/check.log"

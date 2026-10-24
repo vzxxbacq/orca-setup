@@ -45,7 +45,7 @@ Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [--pairing
   --task-source linear
                  Also make Linear Orca's task source (--apply), and require it to be connected (--check).
 
-Optional modules (run only together with --apply):
+Optional modules (installed only together with --apply; --check also checks the ones given):
   --power --containers --apple --android --media --agent-gemini
 
 Interactive authentication (run one or more on their own):
@@ -98,7 +98,7 @@ done
 action=${action:-plan}
 modules=${modules# }
 auths=${auths# }
-case "$action" in auth | check) [ -z "$modules" ] || die "modules run only with --apply (or show with --plan): $modules" ;; esac
+[ "$action" != auth ] || [ -z "$modules" ] || die "modules run only with --apply (or show with --plan, or check with --check): $modules"
 [ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (README section 5.1).'
 
 require_non_root
@@ -129,9 +129,6 @@ orca_rpc() {
 
 json() { node "$ORCA_SETUP_ROOT/lib/json.cjs" "$@"; }
 
-# Auth modes that work on Linux: gh, and the Orca accounts (`orca-ide account add` on this device).
-linux_auth() { case "$1" in gh | codex | claude) return 0 ;; *) return 1 ;; esac; }
-
 # linux_role: the role the Linux Orca checks assume: --role, else server when the serve unit exists, else client.
 linux_role() {
   if [ -n "$role" ]; then echo "$role"
@@ -139,7 +136,17 @@ linux_role() {
   else echo client; fi
 }
 
+# Each modules/<name>.sh defines module_<name>_describe and may define module_<name>_plan, _apply and _check
+# (run after the module's manifest rows) and module_<name>_skip <plan|apply|check>, which returns 0 and sets
+# MODULE_SKIP_REASON when the module does not apply to this device (it is then skipped with a notice, not an error).
 module_function() { printf 'module_%s_%s\n' "${1//-/_}" "$2"; }
+
+MODULE_SKIP_REASON=''
+# module_skipped <name> <mode>: the module is skipped on this device; the reason is in MODULE_SKIP_REASON.
+module_skipped() {
+  MODULE_SKIP_REASON=''
+  has_function "$(module_function "$1" skip)" && "$(module_function "$1" skip)" "$2"
+}
 
 has_function() { declare -F "$1" >/dev/null; }
 
@@ -154,6 +161,7 @@ method_label() {
     cask:*) printf 'brew cask %s' "${1#cask:}" ;;
     npm:*) printf 'npm %s -> ~/.local' "${1#npm:}" ;;
     installer:*) printf 'official installer %s' "${1#installer:}" ;;
+    github-release:*) printf '%s from the latest stable %s release -> ~/.local/bin' "$(printf '%s' "${1#github-release:}" | cut -d: -f2)" "$(printf '%s' "${1#github-release:}" | cut -d: -f1)" ;;
     os) printf 'shipped with macOS (Command Line Tools)' ;;
     apt:*) printf 'apt %s' "${1#apt:}" ;;
     apt-repo:*) printf 'apt %s from %s' "${1##*:}" "$(apt_repo_uri "$(printf '%s' "${1#apt-repo:}" | cut -d: -f1)")" ;;
@@ -186,7 +194,7 @@ install_row() {
     installer:*) run_installer "${1#installer:}" ;;
     uv-python:*) have uv || die 'uv is required to install Python.'; step uv python install "${1#uv-python:}" ;;
     uv-tool:*) have uv || die "uv is required to install ${1#uv-tool:}."; step uv tool install "${1#uv-tool:}" ;;
-    apt:* | apt-repo:* | orca-deb:*) debian_install "$1" ;;
+    apt:* | apt-repo:* | orca-deb:* | github-release:*) debian_install "$1" ;;
     *) macos_install "$1" ;;
   esac
 }
@@ -320,17 +328,13 @@ print_orca_plan() {
 
 print_module_plan() {
   local name selected
-  if [ "$PLATFORM" = debian ]; then
-    info 'Optional modules: Linux versions arrive in P3; --apply skips them on Linux.'
-    for name in $MODULES; do printf '  --%s\n' "$name"; done
-    return 0
-  fi
   info 'Optional modules (add to --apply):'
   for name in $MODULES; do
     selected=''
     case " $modules " in *" $name "*) selected=' [selected]' ;; esac
     printf '  --%-13s %s%s\n' "$name" "$("$(module_function "$name" describe)")" "$selected"
     [ -n "$selected" ] || continue
+    if module_skipped "$name" plan; then info "    skip: $MODULE_SKIP_REASON"; continue; fi
     process_group plan "$name" "$(group_manifest "$name")" | sed "s/^/  /"
     if has_function "$(module_function "$name" plan)"; then "$(module_function "$name" plan)"; fi
   done
@@ -367,10 +371,7 @@ do_plan() {
   print_orca_plan
   print_module_plan
   info 'Authentication (interactive, run on their own):'
-  for name in $AUTHS; do
-    if [ "$PLATFORM" = debian ] && ! linux_auth "$name"; then printf '  --auth-%-8s %s\n' "$name" 'Linux: arrives in P3.'
-    else printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; fi
-  done
+  for name in $AUTHS; do printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; done
   info '  --check         Show baseline and authentication readiness, without printing credentials.'
   info 'Existing installations and user configuration are preserved. SSH is never configured.'
 }
@@ -446,12 +447,8 @@ do_apply() {
   apply_role_check
   if [ "$PLATFORM" = debian ] && [ "$role" = server ]; then serve_apply "$pairing_address"; fi
   apply_orca
-  if [ "$PLATFORM" = debian ]; then
-    for name in $modules; do info "SKIP module $name: Linux support arrives in P3"; done
-    info 'BASELINE_DONE'
-    return 0
-  fi
   for name in $modules; do
+    if module_skipped "$name" apply; then info "SKIP module $name: $MODULE_SKIP_REASON"; continue; fi
     info "MODULE $name"
     process_group apply "$name" "$(group_manifest "$name")"
     if has_function "$(module_function "$name" apply)"; then "$(module_function "$name" apply)"; fi
@@ -522,6 +519,13 @@ check_orca() {
   fi
 }
 
+# check_module <name>: a requested module's manifest rows and its own items; a skipped module counts nothing.
+check_module() {
+  if module_skipped "$1" check; then report "skipped ($MODULE_SKIP_REASON; not counted)" "Module $1"; return 0; fi
+  check_tools "$(group_manifest "$1")" "$1"
+  if has_function "$(module_function "$1" check)"; then "$(module_function "$1" check)"; fi
+}
+
 # The role check reads local pairing stores, so it runs even when the Orca runtime is unreachable.
 check_role() {
   local role_output role_status=0
@@ -536,11 +540,13 @@ check_role() {
 }
 
 do_check() {
+  local name
   [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
   info "Device: $(detect_distro) $ARCH, package manager: $(detect_pkg_manager), Orca CLI: $ORCA_CLI"
   check_tools baseline.tsv baseline
   check_tools agents.tsv baseline
   if [ "$PLATFORM" = debian ]; then process_path_block check; fi
+  for name in $modules; do check_module "$name"; done
   check_versions
   if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; else report PENDING 'GitHub auth'; fi
   check_orca
@@ -556,9 +562,6 @@ do_check() {
 do_auth() {
   local name
   [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
-  if [ "$PLATFORM" = debian ]; then
-    for name in $auths; do linux_auth "$name" || die "--auth-$name on Linux arrives in P3; --auth-gh, --auth-codex and --auth-claude work now."; done
-  fi
   for name in $auths; do "auth_${name}"; done
 }
 

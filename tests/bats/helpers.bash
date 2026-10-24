@@ -10,6 +10,8 @@ REAL_BASH=$(command -v bash)
 # shellcheck disable=SC2034 # used by the test files
 REAL_DIFF=$(command -v diff)
 REAL_NODE=$(command -v node)
+# shellcheck disable=SC2034 # used by the test files
+REAL_PYTHON=$(command -v python3 || true)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
 SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch'
@@ -52,13 +54,17 @@ fake_uname() {
   fake_cmd uname "case \"\${1:-}\" in -m) echo $2 ;; *) echo $1 ;; esac"
 }
 
-# fake_os_release <ID> <VERSION_ID> [ID_LIKE]
+# fake_os_release <ID> <VERSION_ID> [ID_LIKE]: with the release code name of Ubuntu 24.04 and Debian 12.
 fake_os_release() {
   export ORCA_SETUP_OS_RELEASE=$SB/os-release
   {
     printf 'NAME="Fake %s"\n' "$1"
     printf 'ID=%s\n' "$1"
     printf 'VERSION_ID="%s"\n' "$2"
+    case "$1 $2" in
+      'ubuntu 24.04') printf 'VERSION_CODENAME=noble\nUBUNTU_CODENAME=noble\n' ;;
+      'debian 12') printf 'VERSION_CODENAME=bookworm\n' ;;
+    esac
     [ -z "${3:-}" ] || printf 'ID_LIKE="%s"\n' "$3"
   } >"$ORCA_SETUP_OS_RELEASE"
 }
@@ -130,8 +136,9 @@ fake_baseline_present() {
 }
 
 # fake_linux [ID VERSION_ID ID_LIKE ARCH]: Ubuntu 24.04 x86_64 by default. apt state lives in the sandbox:
-# keyrings and source lists under $SB/apt, installed packages in $FAKE_DPKG. The fake sudo logs every call
-# and records `apt-get install` packages as installed; it never runs anything.
+# keyrings and source lists under $SB/apt, installed packages in $FAKE_DPKG, the user's groups in $SB/groups.
+# The fake sudo logs every call, records `apt-get install` packages as installed, `usermod -aG` groups as joined
+# and `systemctl mask` units in $SB/masked, and copies `install` files into the sandbox; it runs nothing else.
 fake_linux() {
   fake_uname Linux "${4:-x86_64}"
   fake_os_release "${1:-ubuntu}" "${2:-24.04}" "${3-debian}"
@@ -145,6 +152,10 @@ fake_linux() {
 case "$*" in
   *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;;
   *"loginctl enable-linger"*) echo yes >"$SB/linger" ;;
+  *"usermod -aG "*) printf " %s" "$3" >>"$SB/groups" ;;
+  "systemctl mask "*) shift 2; printf "%s\n" "$@" >>"$SB/masked" ;;
+  "install -d "*) for d; do :; done; mkdir -p "$d" ;;
+  "install -m 0644 "*) mkdir -p "$(dirname "$5")"; cp "$4" "$5" ;;
 esac'
   # The dynamic linker cache starts empty; fake_library adds to it.
   # shellcheck disable=SC2016
@@ -152,7 +163,8 @@ esac'
   : >"$SB/ldconfig"
   # A regular user with a fixed name, so snapshots do not depend on who runs the tests.
   # shellcheck disable=SC2016
-  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; *) echo "uid=1000(builder)" ;; esac'
+  # `id -nG builder` reads the group database ($SB/groups); bare `id -nG` is this session, which never changes.
+  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; -nG) if [ -n "${2:-}" ]; then echo "builder$(cat "$SB/groups" 2>/dev/null)"; else echo builder; fi ;; *) echo "uid=1000(builder)" ;; esac'
 }
 
 # fake_orca_linux: Orca installed from the .deb, plus systemd. The CLI (orca-ide on PATH) answers status, skills

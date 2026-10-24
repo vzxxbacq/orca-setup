@@ -1,0 +1,6 @@
+# Packages that mean a repository's software is already installed from another source. --apply never installs
+# from the repository while one of them is installed, so an existing install is never replaced or upgraded.
+# Columns (tab-separated): repo (from apt-repos.tsv), space-separated package names.
+# Docker: the unofficial packages Docker's install guide lists as conflicting, plus Podman.
+
+docker	docker.io docker-compose docker-compose-v2 docker-doc docker-buildx podman-docker containerd runc podman

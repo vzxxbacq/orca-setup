@@ -111,15 +111,6 @@ apply_ready() {
   no_calls
 }
 
-@test "--auth-agy and --auth-linear wait for P3 on Linux" {
-  run_setup --auth-agy
-  [ "$status" -eq 1 ]
-  [[ "$output" == *'--auth-agy on Linux arrives in P3'* ]]
-  run_setup --auth-gh --auth-linear
-  [ "$status" -eq 1 ]
-  no_calls
-}
-
 # ------------------------------------------------------------------ apply
 
 @test "--apply installs apt packages first, verifies the gh key, then a second run changes nothing" {

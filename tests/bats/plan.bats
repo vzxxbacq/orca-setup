@@ -91,8 +91,9 @@ snapshot() { # snapshot <name>: compare $output with tests/bats/fixtures/<name>,
   [ "$status" -eq 2 ]
   run_setup --plan --check
   [ "$status" -eq 1 ]
-  run_setup --check --media
+  run_setup --auth-gh --media
   [ "$status" -eq 1 ]
+  [[ "$output" == *'modules run only with --apply'* ]]
   run_setup --task-source jira
   [ "$status" -eq 1 ]
 }

@@ -52,18 +52,18 @@ Orca server (--apply --role server):
   pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)
 Orca (--apply):
   skills and settings follow once Orca is installed and running
-Optional modules: Linux versions arrive in P3; --apply skips them on Linux.
-  --power
-  --containers
-  --apple
-  --android
-  --media
-  --agent-gemini
+Optional modules (add to --apply):
+  --power         Use sudo to mask the systemd sleep targets; remind you of the BIOS power-loss setting.
+  --containers    Install Docker Engine from Docker's apt repository if missing; add you to the docker group.
+  --apple         macOS only: skipped on Linux with a notice.
+  --android       Install Android platform tools if missing.
+  --media         Install PDF/media processing helpers if missing.
+  --agent-gemini  Install the Gemini CLI if missing (optional; not usable with personal accounts).
 Authentication (interactive, run on their own):
-  --auth-gh       GitHub browser authentication, retaining an existing valid login.
+  --auth-gh       GitHub device-code login: open https://github.com/login/device on any device and enter the code gh shows; an existing valid login is kept.
   --auth-codex    Add a Codex account to this host's Orca using device authentication.
   --auth-claude   Add a Claude account to this host's Orca (interactive), unless one is selected.
-  --auth-agy      Linux: arrives in P3.
-  --auth-linear   Linux: arrives in P3.
+  --auth-agy      Start agy to sign in to Google; over SSH it prints a URL to open elsewhere and asks for the code. Needs an unlocked Secret Service keyring to keep the session.
+  --auth-linear   Print Linear's API settings URL (open it on any device); read a key without echoing or logging it.
   --check         Show baseline and authentication readiness, without printing credentials.
 Existing installations and user configuration are preserved. SSH is never configured.
