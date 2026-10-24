@@ -143,11 +143,12 @@ if [ "$mode" = client ]; then
   id -nG "$USER" | tr ' ' '\n' | grep -qx docker || fail "$USER is not in the docker group"
   grep -qx 'NOTE log out and back in (a new login) before using docker without sudo' "$work/first.log" ||
     fail 'no new-login notice for the docker group'
-  for tool in pdftotext ffmpeg 7z adb fastboot gemini; do command -v "$tool" || fail "$tool is missing"; done
+  for tool in pdftotext ffmpeg 7z adb fastboot; do command -v "$tool" || fail "$tool is missing"; done
+  # User-level tools: ~/.local/bin, which the PATH block puts on a login shell's PATH.
   [ -x "$HOME/.local/bin/marksman" ] || fail 'marksman is not in ~/.local/bin'
   "$HOME/.local/bin/marksman" --version || fail 'marksman does not run'
+  "$HOME/.local/bin/gemini" --version || fail 'gemini does not run'
   adb version || fail 'adb does not run'
-  gemini --version || fail 'gemini does not run'
 else
   for target in sleep.target suspend.target hibernate.target hybrid-sleep.target; do
     [ "$(systemctl is-enabled "$target" 2>/dev/null || true)" = masked ] || fail "$target is not masked"
