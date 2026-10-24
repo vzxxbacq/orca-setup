@@ -112,6 +112,41 @@ orca_app_path() {
   printf '%s\n' "${ORCA_APP_PATH:-${ORCA_SETUP_APPLICATIONS_DIR:-/Applications}/Orca.app}"
 }
 
+# The installed Orca: the app bundle on macOS; on Linux the directory that holds the Electron executable and
+# resources/ (the .deb uses /opt/Orca; its postinst also knows /opt/orca-ide and /opt/orca). ORCA_APP_PATH wins.
+orca_install_dir() {
+  local dir
+  if [ "$(detect_os)" = macos ] || [ -n "${ORCA_APP_PATH:-}" ]; then
+    orca_app_path
+    return
+  fi
+  for dir in /opt/Orca /opt/orca-ide /opt/orca; do
+    [ -d "$dir/resources" ] && { printf '%s\n' "$dir"; return; }
+  done
+  echo /opt/Orca
+}
+
+# orca_executable: Orca's Electron executable, which runs scripts as Node.js with ELECTRON_RUN_AS_NODE=1.
+# On Linux the name follows the CLI shim's own lookup (orca-ide, orca, Orca).
+orca_executable() {
+  local dir name
+  dir=$(orca_install_dir)
+  if [ "$(detect_os)" = macos ]; then
+    printf '%s\n' "$dir/Contents/MacOS/Orca"
+    return
+  fi
+  for name in orca-ide orca Orca; do
+    [ -f "$dir/$name" ] && [ -x "$dir/$name" ] && { printf '%s\n' "$dir/$name"; return; }
+  done
+  printf '%s\n' "$dir/orca-ide"
+}
+
+# orca_resources_dir: the app's resources (app.asar.unpacked/out/cli/runtime-client.js lives below it).
+orca_resources_dir() {
+  if [ "$(detect_os)" = macos ]; then printf '%s\n' "$(orca_install_dir)/Contents/Resources"
+  else printf '%s\n' "$(orca_install_dir)/resources"; fi
+}
+
 # The Orca CLI to call. ORCA_CLI_COMMAND wins; on Linux bare `orca` is the GNOME screen reader, so use
 # `orca-ide`; on macOS fall back to the shim inside the app bundle when `orca` is not on PATH yet.
 detect_orca_cli() {

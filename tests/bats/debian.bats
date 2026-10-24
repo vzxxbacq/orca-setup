@@ -20,10 +20,11 @@ snapshot() { # snapshot <name>: compare $output (sandbox paths shown as <sandbox
 
 no_calls() { [ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG"; return 1; }; }
 
-# Everything but the apt packages and gh is present, so --apply only reaches the fakes.
+# Everything but the apt packages and gh is present (Orca too, with its skills), so --apply only reaches the fakes.
 apply_ready() {
   local name
-  for name in npm pnpm python3.12 uv ruff orca-ide codex claude dsh dsh-tui pi bun omp grok agy; do fake_present "$name"; done
+  for name in npm pnpm python3.12 uv ruff codex claude dsh dsh-tui pi bun omp grok agy; do fake_present "$name"; done
+  fake_orca_linux
   fake_gpg
   # shellcheck disable=SC2016 # expanded by the stub
   fake_cmd curl 'out=""; prev=""; for a; do [ "$prev" = -o ] && out=$a; prev=$a; done; echo "FAKEKEY ${FAKE_KEY_FPRS//,/ }" >"$out"'
@@ -63,7 +64,8 @@ apply_ready() {
   run_setup --plan
   [ "$status" -eq 0 ]
   [ -z "$(grep -e '^ *sudo ' -e '^  install  ' <<<"$output")" ]
-  [[ "$output" == *'later    orca                   Orca headless runtime (.deb), P2'* ]]
+  [[ "$output" == *'present  orca'* ]]
+  [[ "$output" == *'present  skills orca-cli orca-linear computer-use'* ]]
   no_calls
 }
 
@@ -106,20 +108,23 @@ apply_ready() {
   no_calls
 }
 
-@test "--auth-* other than gh waits for Orca on Linux" {
-  run_setup --auth-codex
+@test "--auth-agy and --auth-linear wait for P3 on Linux" {
+  run_setup --auth-agy
   [ "$status" -eq 1 ]
-  [[ "$output" == *'only --auth-gh works in P1'* ]]
+  [[ "$output" == *'--auth-agy on Linux arrives in P3'* ]]
+  run_setup --auth-gh --auth-linear
+  [ "$status" -eq 1 ]
+  no_calls
 }
 
 # ------------------------------------------------------------------ apply
 
 @test "--apply installs apt packages first, verifies the gh key, then a second run changes nothing" {
   apply_ready
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *'SKIP orca (P2 on this platform)'* ]]
-  [[ "$output" == *'SKIP Orca: Orca on Linux (headless runtime, skills, settings) arrives in P2'* ]]
+  [[ "$output" == *'PRESENT orca'* ]]
+  [[ "$output" == *'SKIP Orca settings: no Orca runtime runs on this client'* ]]
   [[ "$output" == *'ROLE none'* ]]
   [ "${lines[${#lines[@]} - 1]}" = BASELINE_DONE ]
   # Root commands, in order: apt packages (one update first), then the gh repository and gh.
@@ -134,7 +139,7 @@ apply_ready() {
   [ "$(grep -c '^# >>> orca-setup PATH >>>$' "$HOME/.zshrc")" -eq 1 ]
 
   : >"$FAKE_LOG"
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 0 ]
   no_calls
   # Only PRESENT items, deferred items and the role report: no step ("+ ...") at all.
@@ -148,7 +153,7 @@ apply_ready() {
   for name in git-lfs rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   export FAKE_KEY_FPRS=2C6106201985B60E6C7AC87323F3D4EA75716059,0000000000000000000000000000000000000000
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 1 ]
   [[ "$output" == *'unexpected signing key 0000000000000000000000000000000000000000'* ]]
   [[ "$output" == *'the gh signing key does not match manifest/apt-repos.tsv'* ]]
@@ -160,7 +165,7 @@ apply_ready() {
   for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   printf '{"environments":[{"name":"control"}]}\n' >"$ORCA_USER_DATA/orca-environments.json"
-  run_setup --apply --role server
+  run_setup --apply --role server --pairing-address 203.0.113.10
   [ "$status" -eq 1 ]
   [[ "$output" == *'PRESENT git'* ]]
   [[ "$output" == *'already holds the other pairing role'* ]]
@@ -169,14 +174,16 @@ apply_ready() {
 
 # ------------------------------------------------------------------ check
 
-@test "--check on Linux does not count Orca and reports the PATH block" {
+@test "--check on a Linux client does not count the runtime and reports the PATH block" {
   apply_ready
   for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
   fake_cmd gh 'exit 1' # not logged in
   run_setup --check
-  [[ "$output" == *'SKIP orca (P2 on this platform; not counted)'* ]]
-  [[ "$output" == *'Orca: not checked on Linux until P2 (not counted)'* ]]
+  [[ "$output" == *'PRESENT orca CLI (orca-ide)'* ]]
+  [[ "$output" == *'Orca runtime: not running (client; not counted)'* ]]
+  [[ "$output" == *'Orca skills: installed'* ]]
+  [[ "$output" != *'Orca serve unit'* ]]
   [[ "$output" == *'MISSING PATH block in ~/.profile'* ]]
   [[ "$output" == *'GitHub auth: PENDING'* ]]
   [ "$status" -eq 3 ] || { echo "$output"; return 1; }

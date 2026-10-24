@@ -1,11 +1,12 @@
 # shellcheck shell=bash
-# apt packages and third-party apt repositories on Ubuntu 24.04 / Debian 12 (x86_64). Existing installs are
+# apt packages, third-party apt repositories and the Orca .deb on Ubuntu 24.04 / Debian 12 (x86_64). Existing installs are
 # detected and never upgraded. as_root is the only place that calls sudo; in plan mode it prints each command
 # instead of running it, so --plan lists exactly the root commands --apply would run.
 
 APT_KEYRINGS_DIR=${ORCA_SETUP_APT_KEYRINGS_DIR:-/etc/apt/keyrings}
 APT_SOURCES_DIR=${ORCA_SETUP_APT_SOURCES_DIR:-/etc/apt/sources.list.d}
 DEBIAN_MODE=apply # plan: print root commands instead of running them
+GITHUB_API=${ORCA_SETUP_GITHUB_API:-https://api.github.com}
 APT_UPDATED=no
 
 as_root() {
@@ -35,7 +36,7 @@ apt_install() {
 debian_package() {
   case "$1" in
     apt:*) printf '%s\n' "${1#apt:}" ;;
-    apt-repo:*) printf '%s\n' "${1##*:}" ;;
+    apt-repo:* | orca-deb:*) printf '%s\n' "${1##*:}" ;;
     *) return 1 ;;
   esac
 }
@@ -136,6 +137,46 @@ debian_add_repo() {
   [ -z "${stage:-}" ] || rm -rf -- "$stage"
 }
 
+# github_deb_install <owner/repo> <package>: install <package>_<version>_amd64.deb from the latest stable GitHub
+# release of <owner/repo> (never a draft or prerelease). The download must match the sha256 digest GitHub
+# records for the release asset, and its control fields must name <package> for amd64; then apt installs it
+# from the local file and resolves its dependencies. Nothing is installed when any check fails.
+github_deb_install() {
+  local repo=$1 package=$2 stage asset tag name url digest
+  if [ "$DEBIAN_MODE" = plan ]; then
+    info "           resolve the latest stable release of $repo with the GitHub API; download ${package}_<version>_amd64.deb"
+    info "           require the sha256 digest GitHub records for that asset, and Package: $package, Architecture: amd64"
+    apt_install "<verified ${package}_<version>_amd64.deb>"
+    return 0
+  fi
+  have node || die "node is required to read the $repo release."
+  { have sha256sum && have dpkg-deb; } || die "sha256sum and dpkg-deb are required to verify the $package package."
+  stage=$(mktemp -d "${TMPDIR:-/tmp}/orca-setup.XXXXXX")
+  # shellcheck disable=SC2064 # expand $stage now; the trap only cleans up after a failure below
+  trap "rm -rf -- '$stage'" EXIT
+  step curl -q -fLsS --connect-timeout 10 --max-time 60 -H 'Accept: application/vnd.github+json' \
+    "$GITHUB_API/repos/$repo/releases/latest" -o "$stage/release.json" || die "could not read the latest $repo release."
+  asset=$(node "$ORCA_SETUP_ROOT/lib/json.cjs" release-asset "^${package}_[0-9][^_/]*_amd64[.]deb\$" <"$stage/release.json") ||
+    die "the latest $repo release has no single ${package}_<version>_amd64.deb."
+  IFS=$'\t' read -r tag name url digest <<<"$asset"
+  case "$url" in "https://github.com/$repo/releases/download/$tag/$name") ;; *) die "unexpected download URL for $name: $url" ;; esac
+  [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "GitHub records no sha256 digest for $name; refusing to install an unverified package (install it by hand from https://github.com/$repo/releases)."
+  info "$repo $tag: $name"
+  step curl -q -fLsS --connect-timeout 10 --max-time 900 "$url" -o "$stage/$name" || die "could not download $name."
+  printf '%s  %s\n' "${digest#sha256:}" "$stage/$name" | sha256sum -c --status ||
+    die "$name does not match the sha256 digest GitHub records for it; refusing to install it."
+  { [ "$(dpkg-deb -f "$stage/$name" Package)" = "$package" ] && [ "$(dpkg-deb -f "$stage/$name" Architecture)" = amd64 ]; } ||
+    die "$name is not the $package package for amd64; refusing to install it."
+  info "verified $name (sha256 ${digest#sha256:})"
+  # apt reads local packages as its unprivileged _apt user; setup.sh's umask 077 would hide the file from it.
+  chmod 0755 "$stage"
+  chmod 0644 "$stage/$name"
+  apt_install "$stage/$name"
+  rm -rf -- "$stage"
+  trap - EXIT
+}
+
 # debian_install <method>: install one missing apt package (with its repository first, when it needs one).
 debian_install() {
   local spec
@@ -145,11 +186,14 @@ debian_install() {
       spec=${1#apt-repo:}
       debian_add_repo "${spec%%:*}"
       apt_install "${spec#*:}" ;;
+    orca-deb:*)
+      spec=${1#orca-deb:}
+      github_deb_install "${spec%:*}" "${spec##*:}" ;;
     *) die "unknown Debian install method: $1" ;;
   esac
 }
 
 # debian_plan <method>: print the root commands debian_install would run.
 debian_plan() {
-  case "$1" in apt:* | apt-repo:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
+  case "$1" in apt:* | apt-repo:* | orca-deb:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
 }

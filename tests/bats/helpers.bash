@@ -12,7 +12,7 @@ REAL_DIFF=$(command -v diff)
 REAL_NODE=$(command -v node)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
-SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail'
+SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch'
 
 make_sandbox() {
   SB=$BATS_TEST_TMPDIR/sandbox
@@ -22,7 +22,7 @@ make_sandbox() {
     path=$(command -v "$util") || continue
     ln -sf "$path" "$SB/bin/$util"
   done
-  export HOME=$SB/home
+  export SB HOME=$SB/home
   export PATH=$SB/bin
   export ORCA_SETUP_BREW_PREFIX=$SB/brew
   export ORCA_SETUP_APPLICATIONS_DIR=$SB/Applications
@@ -123,7 +123,63 @@ fake_linux() {
   # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
   fake_cmd dpkg-query 'for p; do :; done; grep -qxF -- "$p" "$FAKE_DPKG" && printf "install ok installed"'
   # shellcheck disable=SC2016
-  fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"; case "$*" in *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;; esac'
+  fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"
+case "$*" in
+  *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;;
+  *"loginctl enable-linger"*) echo yes >"$SB/linger" ;;
+esac'
+  # A regular user with a fixed name, so snapshots do not depend on who runs the tests.
+  # shellcheck disable=SC2016
+  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; *) echo "uid=1000(builder)" ;; esac'
+}
+
+# fake_orca_linux: Orca installed from the .deb, plus systemd. The CLI (orca-ide on PATH) answers status, skills
+# and environment list (failing without a cli-environments.json, so role.sh reads the pairing store files); the
+# Electron executable under $ORCA_APP_PATH answers orca-rpc calls. The runtime is up while $SB/runtime-up exists,
+# which the fake `systemctl --user start` creates. Its status reply carries a fake pairing URL, so any test can
+# prove that setup.sh never prints what the CLI reports.
+fake_orca_linux() {
+  export ORCA_APP_PATH=$SB/opt/Orca
+  mkdir -p "$ORCA_APP_PATH/resources"
+  echo '{"defaultTuiAgent":"claude","agentStatusHooksEnabled":true}' >"$SB/orca-settings.json"
+  echo '{"ok":true,"result":{"skills":[{"name":"orca-cli"},{"name":"orca-linear"},{"name":"computer-use"}]}}' >"$SB/orca-skills.json"
+  cat >"$ORCA_APP_PATH/orca-ide" <<SH
+#!$REAL_BASH
+case "\$1" in *role.cjs) exec "$REAL_NODE" "\$@" ;; esac
+[ -e "\$SB/runtime-up" ] || { echo 'runtime unreachable' >&2; exit 1; }
+case "\$3" in
+  settings.get) printf '{"settings":%s}\n' "\$(cat "\$SB/orca-settings.json")" ;;
+  settings.update) cat >"\$SB/orca-settings.json"; echo '{}' ;;
+  accounts.list) echo '{"codex":{"activeAccountId":null},"claude":{"activeAccountId":null}}' ;;
+  *) echo "Orca \$*" >>"\$FAKE_LOG"; echo '{}' ;;
+esac
+SH
+  chmod +x "$ORCA_APP_PATH/orca-ide"
+  # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
+  fake_cmd orca-ide '
+case "$1 $2" in
+  "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || exit 1 ;;
+  "skills installed") cat "$SB/orca-skills.json" ;;
+  "status --json")
+    [ -e "$SB/runtime-up" ] || { echo "{\"ok\":false}"; exit 1; }
+    echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true},\"pairing\":{\"url\":\"orca://pair?code=FAKE-PAIRING-SECRET\"}}}" ;;
+  *) echo "orca-ide $*" >>"$FAKE_LOG" ;;
+esac'
+  # shellcheck disable=SC2016
+  fake_cmd loginctl 'case "$1" in show-user) cat "$SB/linger" 2>/dev/null || echo no ;; *) echo "loginctl $*" >>"$FAKE_LOG"; exit 1 ;; esac'
+  # shellcheck disable=SC2016
+  fake_cmd systemctl '
+[ "$1" = --user ] || { echo "systemctl $*" >>"$FAKE_LOG"; exit 1; }
+shift
+quiet=no; [ "${2:-}" = --quiet ] && quiet=yes
+case "$1" in
+  show-environment) exit 0 ;;
+  is-enabled) [ -e "$SB/unit-enabled" ] ;;
+  is-active) if [ -e "$SB/runtime-up" ]; then [ $quiet = yes ] || echo active; else [ $quiet = yes ] || echo inactive; exit 3; fi ;;
+  enable) echo "systemctl --user $*" >>"$FAKE_LOG"; touch "$SB/unit-enabled" ;;
+  start | restart) echo "systemctl --user $*" >>"$FAKE_LOG"; touch "$SB/runtime-up" ;;
+  *) echo "systemctl --user $*" >>"$FAKE_LOG" ;;
+esac'
 }
 
 # fake_gpg: `gpg --show-keys` lists the fingerprints written in a fake key file ("FAKEKEY <fpr> ..."), and

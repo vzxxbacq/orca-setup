@@ -1,0 +1,67 @@
+orca-setup plan (read-only; nothing is changed)
+Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide
+Pairing role: server (detected: none); accepts runtime pairings, never saves environments
+sudo: present; --apply runs only the sudo commands listed below as root
+Baseline tools (--apply):
+  present  git
+  present  git-lfs
+  present  ripgrep
+  present  jq
+  present  tmux
+  present  cmake
+  present  pkg-config
+  present  build-essential
+  present  curl
+  present  unzip
+  present  ca-certificates
+  present  gnupg
+  present  gh
+  present  node
+  present  uv
+  present  pnpm
+  present  python
+  present  ruff
+  install  orca                   .deb from the latest stable stablyai/orca release
+           resolve the latest stable release of stablyai/orca with the GitHub API; download orca-ide_<version>_amd64.deb
+           require the sha256 digest GitHub records for that asset, and Package: orca-ide, Architecture: amd64
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends <verified orca-ide_<version>_amd64.deb>
+Agent CLIs (--apply):
+  present  grok
+  present  agy
+  present  codex
+  present  claude
+  present  dsh
+  present  dsh-tui
+  present  pi
+  present  bun
+  present  omp
+PATH (--apply):
+  add      PATH block in ~/.profile    puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
+  add      PATH block in ~/.zshrc      puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
+Pairing role check (--apply): after the baseline install, before any Orca step
+Orca server (--apply --role server):
+  address  203.0.113.10 (advertised to clients; port 6768)
+  enable   linger for builder (the user's services keep running after logout)
+           sudo loginctl enable-linger builder
+  write    ~/.config/systemd/user/orca-serve.service
+             ExecStart=/usr/bin/orca-ide serve --supervise --no-pairing --port 6768 --pairing-address 203.0.113.10
+  start    systemctl --user enable orca-serve.service, start it, wait until `orca-ide status` reaches the runtime
+  pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)
+Orca (--apply):
+  skills and settings follow once Orca is installed and running
+Optional modules: Linux versions arrive in P3; --apply skips them on Linux.
+  --power
+  --containers
+  --apple
+  --android
+  --media
+  --agent-gemini
+Authentication (interactive, run on their own):
+  --auth-gh       GitHub browser authentication, retaining an existing valid login.
+  --auth-codex    Add a Codex account to this host's Orca using device authentication.
+  --auth-claude   Add a Claude account to this host's Orca (interactive), unless one is selected.
+  --auth-agy      Linux: arrives in P3.
+  --auth-linear   Linux: arrives in P3.
+  --check         Show baseline and authentication readiness, without printing credentials.
+Existing installations and user configuration are preserved. SSH is never configured.

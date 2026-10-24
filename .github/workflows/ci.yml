@@ -37,7 +37,7 @@ jobs:
         run: bats --print-output-on-failure tests/bats
 
   linux-integration:
-    name: Linux integration (${{ matrix.image }})
+    name: Linux client in a container (${{ matrix.image }})
     strategy:
       fail-fast: false
       matrix:
@@ -52,17 +52,31 @@ jobs:
         shell: bash
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo
+          # systemd only provides systemd-analyze here (the container runs no init) to verify the rendered unit.
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo systemd
           useradd --create-home --shell /bin/bash builder
           printf 'builder ALL=(ALL) NOPASSWD:ALL\n' >/etc/sudoers.d/builder
           chmod 0440 /etc/sudoers.d/builder
           home=$(getent passwd builder | cut -d: -f6)
           cp -R "$GITHUB_WORKSPACE" "$home/orca-setup"
           chown -R builder:builder "$home/orca-setup"
-      - name: --apply --role server twice, then --check
+      - name: --apply --role client twice, then --check
         shell: bash
         run: |
           home=$(getent passwd builder | cut -d: -f6)
           sudo -u builder env -i CI=true HOME="$home" USER=builder LOGNAME=builder SHELL=/bin/bash \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            bash "$home/orca-setup/tests/docker/integration.sh"
+            bash "$home/orca-setup/tests/integration/linux.sh" client
+
+  linux-server:
+    name: Linux server on the runner VM (systemd, ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: --apply --role server twice, then --check
+        shell: bash
+        # A clean environment: no GitHub token, no preinstalled tool directories beyond the system PATH.
+        run: |
+          env -i CI=true GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" HOME="$HOME" USER="$USER" \
+            LOGNAME="$USER" SHELL=/bin/bash PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            bash tests/integration/linux.sh server

@@ -6,9 +6,11 @@
 #   macos   brew:<formula> | cask:<cask> | npm:<package> | os (shipped with macOS) | - (not applicable)
 #   debian  Ubuntu 24.04 / Debian 12 (x86_64): apt:<package> | apt-repo:<repo>:<package> (repo from apt-repos.tsv) |
 #           npm:<package> | installer:<official install.sh URL> | uv-python:<version> | uv-tool:<tool> |
-#           orca-deb:<package> (P2) | docker-apt-repo:<package> (P3) | github-release:<name> (P3) | -
+#           orca-deb:<owner/repo>:<package> (.deb from the latest stable GitHub release) |
+#           docker-apt-repo:<package> (P3) | github-release:<name> (P3) | -
 # On Debian, --apply installs apt packages first (curl, gnupg and certificates are needed to add the
-# third-party repositories), then repositories, official installers, npm packages and uv-managed tools.
+# third-party repositories), then repositories, official installers, npm packages and uv-managed tools, and
+# finally the Orca .deb (its download is read with node).
 
 git	git	baseline	brew:git	apt:git
 git-lfs	git-lfs	baseline	brew:git-lfs	apt:git-lfs
@@ -28,7 +30,7 @@ curl	curl	baseline	os	apt:curl
 unzip	unzip	baseline	os	apt:unzip
 ca-certificates	-	baseline	os	apt:ca-certificates
 gnupg	gpg	baseline	-	apt:gnupg
-orca	app:Orca	baseline	cask:stablyai/orca/orca	orca-deb:orca-ide
+orca	app:Orca|orca-ide	baseline	cask:stablyai/orca/orca	orca-deb:stablyai/orca:orca-ide
 docker	app:Docker|docker	containers	cask:docker-desktop	docker-apt-repo:docker-ce
 xcodegen	xcodegen	apple	brew:xcodegen	-
 xcbeautify	xcbeautify	apple	brew:xcbeautify	-

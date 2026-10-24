@@ -17,6 +17,8 @@ ORCA_SETUP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$ORCA_SETUP_ROOT/lib/pkg-debian.sh"
 # shellcheck source=lib/npm-tools.sh
 . "$ORCA_SETUP_ROOT/lib/npm-tools.sh"
+# shellcheck source=lib/orca-serve.sh
+. "$ORCA_SETUP_ROOT/lib/orca-serve.sh"
 for file in "$ORCA_SETUP_ROOT"/modules/*.sh "$ORCA_SETUP_ROOT"/auth/*.sh; do
   # shellcheck source=/dev/null
   . "$file"
@@ -28,7 +30,8 @@ TASK_SOURCES='linear'
 
 usage() {
   cat <<'EOF'
-Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [modules] [--task-source linear]
+Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [--pairing-address ADDRESS] [modules]
+                  [--task-source linear]
        ./setup.sh --auth-gh | --auth-codex | --auth-claude | --auth-agy | --auth-linear
 
   --plan         Print what --apply would do on this device (default; read-only).
@@ -36,6 +39,9 @@ Usage: ./setup.sh [--plan | --apply | --check] [--role client|server] [modules] 
                  then run the selected modules. Requires --role.
   --check        Read-only readiness report; the exit code is the number of missing items.
   --role R       Pairing role of this device: client (dials servers) or server (is dialed).
+  --pairing-address ADDRESS
+                 Linux servers: the private IPv4 address or host name clients dial (Tailscale, LAN,
+                 WireGuard). Required for --apply --role server on Linux; never 127.0.0.1 or a wildcard.
   --task-source linear
                  Also make Linear Orca's task source (--apply), and require it to be connected (--check).
 
@@ -51,6 +57,7 @@ EOF
 
 action=''
 role=''
+pairing_address=''
 task_source=''
 modules=''
 auths=''
@@ -68,6 +75,9 @@ while [ $# -gt 0 ]; do
     --role | --role=*)
       if [ "$1" = --role ]; then [ $# -ge 2 ] || die '--role needs client or server'; role=$2; shift; else role=${1#--role=}; fi
       case "$role" in client | server) ;; *) die "--role must be client or server, not: $role" ;; esac ;;
+    --pairing-address | --pairing-address=*)
+      if [ "$1" = --pairing-address ]; then [ $# -ge 2 ] || die '--pairing-address needs an address'; pairing_address=$2; shift
+      else pairing_address=${1#--pairing-address=}; fi ;;
     --task-source | --task-source=*)
       if [ "$1" = --task-source ]; then [ $# -ge 2 ] || die '--task-source needs a value'; task_source=$2; shift; else task_source=${1#--task-source=}; fi
       case " $TASK_SOURCES " in *" $task_source "*) ;; *) die "unknown task source: $task_source" ;; esac ;;
@@ -102,6 +112,13 @@ PLATFORM=''
 [ "$OS" = macos ] && PLATFORM=macos
 [ "$OS" = linux ] && [ "$(detect_linux_family)" = debian ] && PLATFORM=debian
 
+if [ -n "$pairing_address" ]; then
+  [ "$PLATFORM" = debian ] || die '--pairing-address is for Linux servers; on macOS choose the address in Orca: Settings > Remote Orca Servers.'
+  [ "$role" != client ] || die '--pairing-address is for --role server; a client never serves or advertises an address.'
+  problem=$(pairing_address_problem "$pairing_address")
+  [ -z "$problem" ] || die "--pairing-address $pairing_address is refused: $problem. Use the private address clients dial (README section 1)."
+fi
+
 # ---------------------------------------------------------------- helpers
 
 orca_rpc() {
@@ -111,6 +128,16 @@ orca_rpc() {
 }
 
 json() { node "$ORCA_SETUP_ROOT/lib/json.cjs" "$@"; }
+
+# Auth modes that work on Linux: gh, and the Orca accounts (`orca-ide account add` on this device).
+linux_auth() { case "$1" in gh | codex | claude) return 0 ;; *) return 1 ;; esac; }
+
+# linux_role: the role the Linux Orca checks assume: --role, else server when the serve unit exists, else client.
+linux_role() {
+  if [ -n "$role" ]; then echo "$role"
+  elif [ -e "$(serve_unit_path)" ]; then echo server
+  else echo client; fi
+}
 
 module_function() { printf 'module_%s_%s\n' "${1//-/_}" "$2"; }
 
@@ -132,7 +159,7 @@ method_label() {
     apt-repo:*) printf 'apt %s from %s' "${1##*:}" "$(apt_repo_uri "$(printf '%s' "${1#apt-repo:}" | cut -d: -f1)")" ;;
     uv-python:*) printf 'uv python install %s' "${1#uv-python:}" ;;
     uv-tool:*) printf 'uv tool install %s' "${1#uv-tool:}" ;;
-    orca-deb:*) printf 'Orca headless runtime (.deb), P2' ;;
+    orca-deb:*) printf '.deb from the latest stable %s release' "$(printf '%s' "${1#orca-deb:}" | cut -d: -f1)" ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -141,15 +168,10 @@ method_label() {
 # A "-" check on an apt row means only dpkg can tell.
 row_present() {
   case "$2" in
-    apt:* | apt-repo:*) { [ "$1" != - ] && is_present "$1"; } || debian_installed "$2" ;;
+    apt:* | apt-repo:* | orca-deb:*) { [ "$1" != - ] && is_present "$1"; } || debian_installed "$2" ;;
     brew:* | cask:*) is_present "$1" || macos_installed "$2" ;;
     *) is_present "$1" ;;
   esac
-}
-
-# Rows deferred to a later phase on this platform print why instead of being installed or counted.
-deferred_phase() {
-  case "$1" in orca-deb:*) echo P2 ;; *) return 1 ;; esac
 }
 
 # platform_rows <file.tsv> <group>: the group's rows for this platform, in install order.
@@ -164,20 +186,15 @@ install_row() {
     installer:*) run_installer "${1#installer:}" ;;
     uv-python:*) have uv || die 'uv is required to install Python.'; step uv python install "${1#uv-python:}" ;;
     uv-tool:*) have uv || die "uv is required to install ${1#uv-tool:}."; step uv tool install "${1#uv-tool:}" ;;
-    apt:* | apt-repo:*) debian_install "$1" ;;
+    apt:* | apt-repo:* | orca-deb:*) debian_install "$1" ;;
     *) macos_install "$1" ;;
   esac
 }
 
 # Print or apply one manifest group; $1 = plan|apply, $2 = group, $3 = manifest file.
 process_group() {
-  local mode=$1 group=$2 file=$3 name check method phase
+  local mode=$1 group=$2 file=$3 name check method
   while IFS=$'\t' read -r name check method <&3; do
-    if phase=$(deferred_phase "$method"); then
-      if [ "$mode" = plan ]; then printf '  later    %-22s %s\n' "$name" "$(method_label "$method")"
-      else printf 'SKIP %s (%s on this platform)\n' "$name" "$phase"; fi
-      continue
-    fi
     if row_present "$check" "$method"; then
       if [ "$mode" = plan ]; then printf '  present  %s\n' "$name"; else printf 'PRESENT %s\n' "$name"; fi
       continue
@@ -222,7 +239,7 @@ missing_skill_lines() {
     if [ -n "$installed" ]; then missing=$(printf '%s' "$installed" | json missing $skills | tr '\n' ' '); else missing="$skills"; fi
     missing=${missing% }
     [ -z "$missing" ] || printf '%s\t%s\n' "$targets" "$missing"
-  done < <(skills_for "$PLATFORM")
+  done < <(skills_for "$OS")
 }
 
 # skills_args <targets> <skill ...>: arguments for `orca skills install`, one per line.
@@ -257,7 +274,7 @@ print_orca_plan() {
   fi
   lines=$(missing_skill_lines)
   if [ -z "$lines" ]; then
-    info "  present  skills $(skills_for "$PLATFORM" | cut -f2 | paste -sd ' ' -)"
+    info "  present  skills $(skills_for "$OS" | cut -f2 | paste -sd ' ' -)"
   else
     while IFS=$'\t' read -r targets skills; do
       info "  install  skills $skills"
@@ -273,6 +290,8 @@ print_orca_plan() {
     drift=$(printf '%s' "$current" | json get settings | json diff "$desired" | tr '\n' ' ')
     drift=${drift% }
     if [ -z "$drift" ]; then info "  aligned  settings $desired"; else info "  update   settings ${drift}: $desired"; fi
+  elif [ "$PLATFORM" = debian ] && [ "$role" != server ]; then
+    info "  settings only while an Orca runtime runs on this device (a Linux client has none): $desired"
   else
     info "  update   settings (Orca runtime not reachable): $desired"
   fi
@@ -319,14 +338,17 @@ do_plan() {
     info 'PATH (--apply):'
     process_path_block plan
     info 'Pairing role check (--apply): after the baseline install, before any Orca step'
-    info 'Orca (--apply): skipped on Linux until P2 (headless runtime, skills and settings)'
-  else
-    print_orca_plan
+    case "$role" in
+      server) serve_plan "$pairing_address" ;;
+      client) info 'Orca client: Orca and its CLI only; no server unit and no pairing offer on this device' ;;
+      *) info 'Orca server unit: only with --role server --pairing-address <ip-or-host> (README section 3.3.2)' ;;
+    esac
   fi
+  print_orca_plan
   print_module_plan
   info 'Authentication (interactive, run on their own):'
   for name in $AUTHS; do
-    if [ "$PLATFORM" = debian ] && [ "$name" != gh ]; then printf '  --auth-%-8s %s\n' "$name" 'Linux: arrives with Orca on Linux (P2/P3).'
+    if [ "$PLATFORM" = debian ] && ! linux_auth "$name"; then printf '  --auth-%-8s %s\n' "$name" 'Linux: arrives in P3.'
     else printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; fi
   done
   info '  --check         Show baseline and authentication readiness, without printing credentials.'
@@ -346,6 +368,11 @@ apply_orca() {
   done 3< <(missing_skill_lines)
   desired=$(desired_settings)
   if ! current=$(orca_rpc settings.get); then
+    if [ "$PLATFORM" = debian ] && [ "$role" = client ]; then
+      info 'SKIP Orca settings: no Orca runtime runs on this client (they apply once Orca runs here; rerun --apply then)'
+      return 0
+    fi
+    [ "$PLATFORM" != debian ] || die "the Orca server does not answer settings.get; see: systemctl --user status $ORCA_SERVE_UNIT"
     step "$ORCA_CLI" open
     current=$(orca_rpc settings.get) || die 'Orca runtime is not reachable; open Orca and rerun --apply.'
   fi
@@ -375,6 +402,8 @@ do_apply() {
   [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
   if [ "$PLATFORM" = debian ]; then
     have sudo || die 'sudo is required for the apt steps; install it and add your user to the sudo group.'
+    [ "$role" != server ] || [ -n "$pairing_address" ] ||
+      die '--apply --role server on Linux requires --pairing-address <ip-or-host>, the private address clients dial (README section 3.3.2).'
   else
     have brew || die 'Install Homebrew first: https://brew.sh'
   fi
@@ -382,13 +411,13 @@ do_apply() {
   process_group apply baseline agents.tsv
   if [ "$PLATFORM" = debian ]; then process_path_block apply; fi
   apply_role_check
+  if [ "$PLATFORM" = debian ] && [ "$role" = server ]; then serve_apply "$pairing_address"; fi
+  apply_orca
   if [ "$PLATFORM" = debian ]; then
-    info 'SKIP Orca: Orca on Linux (headless runtime, skills, settings) arrives in P2'
     for name in $modules; do info "SKIP module $name: Linux support arrives in P3"; done
     info 'BASELINE_DONE'
     return 0
   fi
-  apply_orca
   for name in $modules; do
     info "MODULE $name"
     process_group apply "$name" "$(group_manifest "$name")"
@@ -400,17 +429,17 @@ do_apply() {
 # ---------------------------------------------------------------- check
 
 missing=0
-# report <state> <label>: print "label: state"; PENDING, MISSING, UNREACHABLE and CONFLICT states count as missing.
+# report <state> <label>: print "label: state"; PENDING, MISSING, UNREACHABLE, CONFLICT, INACTIVE and OFF states
+# count as missing.
 report() {
   printf '%s: %s\n' "$2" "$1"
-  case "$1" in PENDING* | MISSING* | CONFLICT* | UNREACHABLE*) missing=$((missing + 1)) ;; esac
+  case "$1" in PENDING* | MISSING* | CONFLICT* | UNREACHABLE* | INACTIVE* | OFF*) missing=$((missing + 1)) ;; esac
 }
 
 check_tools() { # check_tools <manifest> <group>
-  local name check method phase
+  local name check method
   while IFS=$'\t' read -r name check method; do
-    if phase=$(deferred_phase "$method"); then printf 'SKIP %s (%s on this platform; not counted)\n' "$name" "$phase"
-    elif row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); fi
+    if row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); fi
   done < <(platform_rows "$1" "$2")
 }
 
@@ -424,10 +453,15 @@ check_versions() {
 }
 
 check_orca() {
-  local status accounts settings lines targets skills
+  local status accounts settings lines targets skills reachable=yes
   if have "$ORCA_CLI"; then printf 'PRESENT orca CLI (%s)\n' "$(basename "$ORCA_CLI")"; else printf 'MISSING orca CLI\n'; missing=$((missing + 1)); return 0; fi
+  if [ "$PLATFORM" = debian ] && [ "$(linux_role)" = server ]; then serve_check; fi
   if status=$("$ORCA_CLI" status --json 2>/dev/null) && printf '%s' "$status" | json has result.runtime.reachable; then
     report reachable 'Orca runtime'
+  elif [ "$PLATFORM" = debian ] && [ "$(linux_role)" = client ]; then
+    # A Linux client dials servers; it needs no runtime of its own. Skills are local files, so they are still checked.
+    report 'not running (client; not counted)' 'Orca runtime'
+    reachable=no
   else
     report UNREACHABLE 'Orca runtime'
     return 0
@@ -436,6 +470,7 @@ check_orca() {
   if [ -z "$lines" ]; then report installed 'Orca skills'; else
     while IFS=$'\t' read -r targets skills; do report "MISSING $skills" 'Orca skills'; done <<<"$lines"
   fi
+  [ "$reachable" = yes ] || return 0
   if accounts=$(orca_rpc accounts.list); then
     if printf '%s' "$accounts" | json has codex.activeAccountId; then report selected 'Orca Codex'; else report PENDING 'Orca Codex'; fi
     if printf '%s' "$accounts" | json has claude.activeAccountId; then report selected 'Orca Claude'; else report 'not selected' 'Orca Claude'; fi
@@ -475,7 +510,7 @@ do_check() {
   if [ "$PLATFORM" = debian ]; then process_path_block check; fi
   check_versions
   if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; else report PENDING 'GitHub auth'; fi
-  if [ "$PLATFORM" = debian ]; then info 'Orca: not checked on Linux until P2 (not counted)'; else check_orca; fi
+  check_orca
   check_role
   if have node; then node "$ORCA_SETUP_ROOT/audit/readiness.cjs" || report 'MISSING (audit failed)' 'Readiness audit'; fi
   info "MISSING_ITEMS $missing"
@@ -489,7 +524,7 @@ do_auth() {
   local name
   [ "$SUPPORT" = supported ] || die "unsupported device: $(detect_unsupported_reason)"
   if [ "$PLATFORM" = debian ]; then
-    for name in $auths; do [ "$name" = gh ] || die "--auth-$name on Linux arrives with Orca on Linux (P2/P3); only --auth-gh works in P1."; done
+    for name in $auths; do linux_auth "$name" || die "--auth-$name on Linux arrives in P3; --auth-gh, --auth-codex and --auth-claude work now."; done
   fi
   for name in $auths; do "auth_${name}"; done
 }
