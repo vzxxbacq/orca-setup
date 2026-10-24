@@ -295,10 +295,16 @@ apply_orca() {
 }
 
 do_apply() {
-  local name
+  local name role_status
   [ "$SUPPORT" = supported ] || die "--apply is not implemented for this device in P0 ($(detect_distro) $ARCH)."
   have brew || die 'Install Homebrew first: https://brew.sh'
-  bash "$ORCA_SETUP_ROOT/orca/role.sh" --expect "$role" || die "this device already holds the other pairing role; remove the pairings listed above before --apply --role $role."
+  role_status=0
+  bash "$ORCA_SETUP_ROOT/orca/role.sh" --expect "$role" || role_status=$?
+  case "$role_status" in
+    0) ;;
+    1) die "this device already holds the other pairing role; remove the pairings listed above before --apply --role $role." ;;
+    *) die 'the pairing role cannot be determined (see the reason above); refusing --apply.' ;;
+  esac
   process_group apply baseline baseline.tsv
   process_group apply baseline agents.tsv
   apply_orca
@@ -336,7 +342,7 @@ check_versions() {
 }
 
 check_orca() {
-  local status accounts settings lines targets skills role_output role_status
+  local status accounts settings lines targets skills
   if have "$ORCA_CLI"; then printf 'PRESENT orca CLI (%s)\n' "$(basename "$ORCA_CLI")"; else printf 'MISSING orca CLI\n'; missing=$((missing + 1)); return 0; fi
   if status=$("$ORCA_CLI" status --json 2>/dev/null) && printf '%s' "$status" | json has result.runtime.reachable; then
     report reachable 'Orca runtime'
@@ -364,11 +370,19 @@ check_orca() {
     elif [ "$task_source" = linear ]; then report PENDING 'Linear'
     else report 'not connected (task source is linear; add --task-source linear to require it)' 'Linear'; fi
   fi
-  role_status=0
+}
+
+# The role check reads local pairing stores, so it runs even when the Orca runtime is unreachable.
+check_role() {
+  local role_output role_status=0
   if [ -n "$role" ]; then role_output=$(bash "$ORCA_SETUP_ROOT/orca/role.sh" --expect "$role") || role_status=$?
   else role_output=$(bash "$ORCA_SETUP_ROOT/orca/role.sh") || role_status=$?; fi
   printf '%s\n' "$role_output" | sed '1s/^ROLE /Pairing role: /'
-  if [ "$role_status" -ne 0 ]; then report CONFLICT 'Pairing role check'; fi
+  case "$role_status" in
+    0) ;;
+    1) report CONFLICT 'Pairing role check' ;;
+    *) report UNREACHABLE 'Pairing role check' ;;
+  esac
 }
 
 do_check() {
@@ -383,6 +397,7 @@ do_check() {
   check_versions
   if have gh && gh auth status --hostname github.com >/dev/null 2>&1; then report PASS 'GitHub auth'; else report PENDING 'GitHub auth'; fi
   check_orca
+  check_role
   if have node; then node "$ORCA_SETUP_ROOT/audit/readiness.cjs" || report 'MISSING (audit failed)' 'Readiness audit'; fi
   info "MISSING_ITEMS $missing"
   [ "$missing" -le 255 ] || missing=255

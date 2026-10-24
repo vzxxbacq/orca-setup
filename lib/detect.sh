@@ -129,14 +129,31 @@ detect_orca_cli() {
   esac
 }
 
-# Orca's user-data directory, which holds the pairing stores read by orca/role.sh.
-orca_user_data_dir() {
-  if [ -n "${ORCA_USER_DATA_DIR:-}" ]; then
-    printf '%s\n' "$ORCA_USER_DATA_DIR"
+# orca_user_data_candidates: possible Orca user-data directories (pairing stores), most likely first.
+# Mirrors upstream orcad's resolveUserDataPath: $ORCA_USER_DATA, else $XDG_DATA_HOME/Orca, else ~/.orca on a
+# headless Linux runtime; the Electron desktop path follows as a second candidate on Linux.
+orca_user_data_candidates() {
+  if [ -n "${ORCA_USER_DATA:-}" ]; then
+    printf '%s\n' "$ORCA_USER_DATA"
     return
   fi
   case "$(detect_os)" in
-    macos) printf '%s\n' "$HOME/Library/Application Support/orca" ;;
-    *) printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/orca" ;;
+    macos) printf '%s\n' "$HOME/Library/Application Support/Orca" ;;
+    *)
+      if [ -n "${XDG_DATA_HOME:-}" ]; then printf '%s\n' "$XDG_DATA_HOME/Orca"; else printf '%s\n' "$HOME/.orca"; fi
+      printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/Orca" ;;
   esac
+}
+
+# orca_user_data_dir: the first candidate that holds a pairing store, else the first candidate.
+orca_user_data_dir() {
+  local dir first=''
+  while IFS= read -r dir; do
+    [ -n "$first" ] || first=$dir
+    if [ -e "$dir/orca-devices.json" ] || [ -e "$dir/orca-environments.json" ]; then
+      printf '%s\n' "$dir"
+      return
+    fi
+  done < <(orca_user_data_candidates)
+  printf '%s\n' "$first"
 }

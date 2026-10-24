@@ -76,11 +76,26 @@ snapshot() { # snapshot <name>: compare $output with tests/bats/fixtures/<name>,
 }
 
 @test "--apply refuses a device that holds the other role, before installing anything" {
-  printf '{"ok":true,"result":{"environments":[{"name":"mini"}]}}\n' >"$ORCA_USER_DATA_DIR/cli-environments.json"
+  printf '{"ok":true,"result":{"environments":[{"name":"mini"}]}}\n' >"$ORCA_USER_DATA/cli-environments.json"
   run_setup --apply --role server
   [ "$status" -eq 1 ]
   [[ "$output" == *'saved environment: mini'* ]]
   [[ "$output" == *'already holds the other pairing role'* ]]
+}
+
+@test "--apply refuses when the pairing role cannot be determined" {
+  echo 'not json' >"$ORCA_USER_DATA/orca-devices.json"
+  run_setup --apply --role client
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'ROLE unknown'* ]]
+  [[ "$output" == *'pairing role cannot be determined'* ]]
+}
+
+@test "--check counts an unknown pairing role" {
+  echo '{}' >"$ORCA_USER_DATA/orca-devices.json"
+  run_setup --check
+  [[ "$output" == *'Pairing role: unknown'* ]]
+  [[ "$output" == *'Pairing role check: UNREACHABLE'* ]]
 }
 
 @test "unknown options exit 2; modes cannot be combined" {

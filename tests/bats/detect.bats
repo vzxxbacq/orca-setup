@@ -85,11 +85,33 @@ setup() {
   [ "$(detect_orca_cli)" = orca ]
 }
 
-@test "Orca user-data directory per platform" {
-  unset ORCA_USER_DATA_DIR
-  [ "$(orca_user_data_dir)" = "$HOME/Library/Application Support/orca" ]
+@test "Orca user-data directory: ORCA_USER_DATA wins" {
+  [ "$(orca_user_data_dir)" = "$SB/userdata" ]
   fake_uname Linux x86_64
-  [ "$(orca_user_data_dir)" = "$HOME/.config/orca" ]
+  [ "$(orca_user_data_dir)" = "$SB/userdata" ]
+}
+
+@test "Orca user-data directory on macOS is Application Support/Orca" {
+  unset ORCA_USER_DATA
+  [ "$(orca_user_data_dir)" = "$HOME/Library/Application Support/Orca" ]
+}
+
+@test "Orca user-data directory on headless Linux follows orcad: XDG_DATA_HOME/Orca, else ~/.orca" {
+  unset ORCA_USER_DATA
+  fake_uname Linux x86_64
+  [ "$(orca_user_data_dir)" = "$HOME/.orca" ]
+  XDG_DATA_HOME=$SB/data orca_user_data_dir | grep -qx "$SB/data/Orca"
+}
+
+@test "Orca user-data directory on Linux falls back to the Electron desktop path when it holds the stores" {
+  unset ORCA_USER_DATA
+  fake_uname Linux x86_64
+  mkdir -p "$HOME/.orca/agent-hooks" "$HOME/.config/Orca"
+  echo '[]' >"$HOME/.config/Orca/orca-devices.json"
+  [ "$(orca_user_data_dir)" = "$HOME/.config/Orca" ]
+  XDG_CONFIG_HOME=$SB/cfg orca_user_data_dir | grep -qx "$HOME/.orca"
+  echo '[]' >"$HOME/.orca/orca-devices.json"
+  [ "$(orca_user_data_dir)" = "$HOME/.orca" ]
 }
 
 @test "is_present handles commands, alternatives and apps" {

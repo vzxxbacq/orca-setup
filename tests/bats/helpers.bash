@@ -6,6 +6,7 @@ REPO_ROOT=$(CDPATH='' cd -- "$BATS_TEST_DIRNAME/../.." && pwd)
 REAL_BASH=$(command -v bash)
 # shellcheck disable=SC2034 # used by the test files
 REAL_DIFF=$(command -v diff)
+REAL_NODE=$(command -v node)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
 SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail'
@@ -22,9 +23,9 @@ make_sandbox() {
   export PATH=$SB/bin
   export ORCA_SETUP_BREW_PREFIX=$SB/brew
   export ORCA_SETUP_APPLICATIONS_DIR=$SB/Applications
-  export ORCA_USER_DATA_DIR=$SB/userdata
+  export ORCA_USER_DATA=$SB/userdata
   export FAKE_LOG=$SB/fake.log
-  unset ORCA_CLI_COMMAND ORCA_APP_PATH ORCA_SETUP_OS_RELEASE DISPLAY WAYLAND_DISPLAY XDG_CONFIG_HOME
+  unset ORCA_CLI_COMMAND ORCA_APP_PATH ORCA_SETUP_OS_RELEASE DISPLAY WAYLAND_DISPLAY XDG_CONFIG_HOME XDG_DATA_HOME
   fake_uname Darwin arm64
   fake_cmd sw_vers 'echo 15.5'
 }
@@ -73,6 +74,8 @@ fake_orca() {
   mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin"
   cat >"$app/Contents/MacOS/Orca" <<SH
 #!$REAL_BASH
+# As ELECTRON_RUN_AS_NODE, scripts other than the RPC bridge run on Node.js, like Orca's bundled runtime.
+case "\$1" in *role.cjs) exec "$REAL_NODE" "\$@" ;; esac
 # argv: orca-rpc.cjs local METHOD PARAMS
 case "\$3" in
   settings.get) echo '{"settings":{"defaultTuiAgent":"claude","agentStatusHooksEnabled":true}}' ;;
@@ -85,7 +88,7 @@ SH
   # shellcheck disable=SC2016 # the stub body expands when the stub runs
   fake_cmd orca '
 case "$1 $2" in
-  "environment list") cat "$ORCA_USER_DATA_DIR/cli-environments.json" 2>/dev/null || echo "{\"ok\":true,\"result\":{\"environments\":[]}}" ;;
+  "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || echo "{\"ok\":true,\"result\":{\"environments\":[]}}" ;;
   "skills installed") echo "{\"ok\":true,\"result\":{\"skills\":[{\"name\":\"orca-cli\"},{\"name\":\"orca-linear\"}]}}" ;;
   "status --json") echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true}}}" ;;
   *) echo "orca $*" >>"$FAKE_LOG" ;;

@@ -18,13 +18,13 @@ devices() {
     out="$out$sep{\"deviceId\":\"DEVICE-ID-SECRET\",\"token\":\"TOKEN-SECRET-$name\",\"name\":\"$name\",\"scope\":\"$scope\",\"pairedAt\":1,\"lastSeenAt\":$((NOW_MS - days * DAY_MS))}"
     sep=,
   done
-  printf '[%s]\n' "$out" >"$ORCA_USER_DATA_DIR/orca-devices.json"
+  printf '[%s]\n' "$out" >"$ORCA_USER_DATA/orca-devices.json"
 }
 
 environments() {
   local name out='' sep=''
   for name in "$@"; do out="$out$sep{\"id\":\"env-$name\",\"name\":\"$name\",\"pairingCode\":\"PAIRING-SECRET\"}"; sep=,; done
-  printf '{"ok":true,"result":{"environments":[%s]}}\n' "$out" >"$ORCA_USER_DATA_DIR/cli-environments.json"
+  printf '{"ok":true,"result":{"environments":[%s]}}\n' "$out" >"$ORCA_USER_DATA/cli-environments.json"
 }
 
 role() { run "$REAL_BASH" "$REPO_ROOT/orca/role.sh" "$@"; }
@@ -96,7 +96,7 @@ no_secrets() {
 
 @test "falls back to the pairing store file when the CLI cannot answer" {
   fake_cmd orca 'exit 1'
-  printf '{"version":1,"environments":[{"name":"mini","id":"x"}]}\n' >"$ORCA_USER_DATA_DIR/orca-environments.json"
+  printf '{"version":1,"environments":[{"name":"mini","id":"x"}]}\n' >"$ORCA_USER_DATA/orca-environments.json"
   role
   [ "${lines[0]}" = 'ROLE client' ]
 }
@@ -106,4 +106,50 @@ no_secrets() {
   [ "$status" -eq 2 ]
   role --bogus
   [ "$status" -eq 2 ]
+}
+
+@test "without node, Orca's bundled runtime runs the check" {
+  rm "$SB/bin/node"
+  devices runtime:0:laptop
+  role --expect server
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = 'ROLE server' ]
+  no_secrets
+}
+
+@test "without node or Orca's runtime the role is unknown and fails closed" {
+  rm "$SB/bin/node"
+  rm -r "$SB/Applications/Orca.app"
+  devices runtime:0:laptop
+  role --expect client
+  [ "$status" -eq 3 ]
+  [ "${lines[0]}" = 'ROLE unknown' ]
+  [[ "${lines[1]}" == "reason: neither node nor Orca's bundled runtime is available" ]]
+}
+
+@test "a corrupt device registry makes the role unknown" {
+  printf '[{"token":"TOKEN-SECRET", broken' >"$ORCA_USER_DATA/orca-devices.json"
+  role --expect client
+  [ "$status" -eq 3 ]
+  [ "${lines[0]}" = 'ROLE unknown' ]
+  [ "${lines[1]}" = 'reason: orca-devices.json exists but is not valid JSON' ]
+  no_secrets
+  role
+  [ "$status" -eq 3 ]
+}
+
+@test "a device registry with an unexpected shape makes the role unknown" {
+  echo '{"devices":[{"scope":"runtime","token":"TOKEN-SECRET"}]}' >"$ORCA_USER_DATA/orca-devices.json"
+  role --expect server
+  [ "$status" -eq 3 ]
+  [ "${lines[1]}" = 'reason: orca-devices.json has an unexpected shape (not an array)' ]
+  no_secrets
+}
+
+@test "an unreadable environment store makes the role unknown when the CLI cannot answer" {
+  fake_cmd orca 'exit 1'
+  echo '{"version":1}' >"$ORCA_USER_DATA/orca-environments.json"
+  role
+  [ "$status" -eq 3 ]
+  [ "${lines[1]}" = 'reason: orca-environments.json has an unexpected shape' ]
 }
