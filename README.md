@@ -1,10 +1,29 @@
 # orca-setup — PLAN
 
-> Status: **Planning stage (this README only, no code yet)**
+> Status: **P0 implemented (macOS parity)**; Linux is detected but not provisioned yet (P1/P2).
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
 > License: [MIT](LICENSE). This repository is public: never commit host names, internal URLs, addresses or credentials.
+
+---
+
+## 0. Usage (P0)
+
+```sh
+./setup.sh                          # same as --plan: print what would happen on this device, change nothing
+./setup.sh --check                  # read-only readiness report; exit code = number of missing items
+./setup.sh --apply --role server    # install what is missing, Orca skills and defaults (role is required)
+./setup.sh --apply --role server --power --media      # plus optional modules
+./setup.sh --apply --role client --task-source linear # plus Linear as Orca's task source (opt-in)
+./setup.sh --auth-gh                # interactive logins, one or more per run: gh codex claude agy linear
+```
+
+- Optional modules (`--power --containers --apple --android --media --agent-gemini`) only run together with
+  `--apply`; with `--plan` (or no mode) they are shown in detail. They never run on their own.
+- `--auth-*` flags are their own mode and cannot be combined with `--plan`, `--apply` or `--check`.
+- Run as your regular user; `sudo ./setup.sh` is refused. Only `--power` and `--apple` call `sudo` themselves.
+- On Linux, P0 only prints detection results and states that provisioning is not implemented yet.
 
 ---
 
@@ -91,8 +110,8 @@ Package names are recorded in `manifest/agents.tsv`, not in scripts.
 | Always-on | desktop app login item | systemd **user unit**: `orca-ide serve --supervise --port 6768 --pairing-address <LAN/Tailscale IP>` together with `loginctl enable-linger $USER` so it survives logout |
 | Pairing | Settings → Remote Orca Servers → New Link | `orca-ide serve` prints a runtime pairing URL (`--mobile-pairing` for the phone app) |
 | Accounts | `orca account add --agent claude\|codex` | same, run from the server shell (a remote client cannot add accounts) |
-| Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex` | same, minus `orca-emulator` (the iOS simulator is macOS-only); `computer-use` support on Linux is to be verified |
-| Default settings | written through `orca-rpc settings.update` from `manifest/orca-settings.json`: `defaultTuiAgent=codex`, `agentStatusHooksEnabled=true`; the task source is **opt-in** (`--task-source linear` sets `defaultTaskSource=linear` and `visibleTaskProviders=[linear]`) | same |
+| Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex`, listed in `manifest/orca-skills.tsv`; skipped when `orca skills installed` already lists them | same, minus `orca-emulator` (the iOS simulator is macOS-only); `computer-use` support on Linux is to be verified |
+| Default settings | written through `orca-rpc settings.update` from `manifest/orca-settings.json`: `defaultTuiAgent=codex`, `agentStatusHooksEnabled=true`; the task source is **opt-in** (`--task-source linear` sets `defaultTaskSource=linear` and `visibleTaskProviders=[linear]`). `--apply` reads `settings.get` first and writes only when a key differs | same |
 | Resource limits (optional) | none | `ORCA_TERMINAL_PROCESS_CEILING` / `ORCA_TERMINAL_MEMORY_MAX` / `ORCA_TERMINAL_MEMORY_SWAP_MAX` in the systemd unit's `Environment=` (needs cgroup v2 and linger) |
 
 #### 3.3.1 Orca on headless Linux (from the upstream docs)
@@ -119,14 +138,17 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
 | Mode | What it does | Cross-platform notes |
 |---|---|---|
 | `--auth-gh` | `gh auth login --web` (skipped when already logged in) | use the device-code flow when Linux has no desktop |
-| `--auth-codex` | `orca account add --agent codex` | device auth, works headless by design |
-| `--auth-claude` | `orca account add --agent claude` | headless requires a browser or copying the URL |
+| `--auth-codex` | `orca account add --agent codex` (skipped when a Codex account is already selected) | device auth, works headless by design |
+| `--auth-claude` | `orca account add --agent claude` (skipped when a Claude account is already selected) | headless requires a browser or copying the URL |
 | `--auth-agy` | run `agy` to sign in | TBD |
 | `--auth-linear` | open the Linear API settings page, silently read the key and write it into Orca | macOS `open` → Linux `xdg-open`; headless just prints the URL |
 
 Further auth modes (for example a self-hosted Git server) are added through the local overlay (§3.7), not in this repository.
 
 ### 3.5 Optional modules
+
+Modules are selected on the command line and run only with `--apply`; their packages live in the matching group of
+`manifest/baseline.tsv` / `manifest/agents.tsv`, and extra steps (pmset, Xcode, opening Docker) in `modules/<name>.sh`.
 
 | Module | macOS | Linux |
 |---|---|---|
@@ -142,7 +164,11 @@ Further auth modes (for example a self-hosted Git server) are added through the 
 
 - Port `audit-readiness.cjs`: booleans/names only; covers whether env vars exist, auth and MCP names for claude/gemini/dsh/pi/codex, and cloud configs (gcloud/aws/azure/docker/npm).
 - Add: a `PRESENT/MISSING` tool list, versions (node/pnpm/python/uv), Orca runtime reachability, whether the Orca accounts (codex/claude) are selected, whether Linear is connected (only when `--task-source linear` was chosen), whether gh is logged in, the pairing role check (§5.1); on Linux also the systemd user unit state and linger.
-- Exit code = number of missing items, usable directly as an acceptance condition.
+- Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
+  agents from the manifest, a missing Orca CLI, an unreachable Orca runtime, missing Orca skills, a `PENDING` GitHub
+  login or Codex account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
+  other role than `--role`) or an unknown role (unreadable pairing stores). Reported but not counted: versions, the Claude account, Orca settings that differ from the
+  manifest, Linear when only Orca's settings select it, and the `READINESS_JSON` audit line.
 
 ### 3.7 Local overlay (untracked)
 
@@ -150,9 +176,13 @@ Organization- or device-specific settings live in `manifest/local/` (git-ignored
 mirrors, internal hosts. `setup.sh` merges the overlay on top of `manifest/` when it exists. The repository only ships
 `manifest/local.example/` with placeholder values.
 
+Merge rules: a TSV row in `manifest/local/<file>.tsv` whose first column matches a shipped row replaces it in place;
+other rows are appended. `manifest/local/orca-settings.json` is deep-merged over the shipped file (objects merge,
+values and arrays replace). Overlay auth modules are not implemented yet.
+
 ---
 
-## 4. Planned repository layout
+## 4. Repository layout
 
 ```
 orca-setup/
@@ -163,27 +193,31 @@ orca-setup/
 ├── lib/
 │   ├── common.sh                # logging, non-root check, umask, PATH, idempotency helpers
 │   ├── detect.sh                # OS / distro / arch / package manager / desktop presence / orca CLI name
+│   ├── manifest.sh              # manifest parsing and local overlay merge
+│   ├── json.cjs                 # JSON helpers for the shell (names/booleans only)
 │   ├── pkg-macos.sh             # brew formulae / casks
-│   ├── pkg-debian.sh            # apt (incl. third-party repos: gh, NodeSource, Docker)
-│   ├── pkg-fedora.sh            # dnf (placeholder, not implemented for now)
+│   ├── pkg-debian.sh            # (P1) apt (incl. third-party repos: gh, NodeSource, Docker)
+│   ├── pkg-fedora.sh            # (later) dnf placeholder
 │   └── npm-tools.sh             # npm global tools under ~/.local
 ├── manifest/
 │   ├── baseline.tsv             # tool → per-platform package/install method (single source of truth)
 │   ├── agents.tsv               # agent CLI inventory (baseline / optional, per-platform support)
-│   ├── orca-settings.json       # Orca default settings
+│   ├── orca-skills.tsv          # Orca skills per platform and their install targets
+│   ├── orca-settings.json       # Orca default settings and opt-in task sources
 │   └── local.example/           # placeholder overlay; the real manifest/local/ is git-ignored
-├── modules/                     # power / containers / apple / android / media / gpu / orca-runtime / agent-gemini
-├── auth/                        # gh / codex / claude / agy / linear
+├── modules/                     # power / containers / apple / android / media / agent-gemini (gpu, orca-runtime later)
+├── auth/                        # gh / codex / claude / agy / linear (+ linear-login.cjs hidden prompt)
 ├── orca/
 │   ├── orca-rpc.sh              # locate the Orca executable per platform (ORCA_APP_PATH), ELECTRON_RUN_AS_NODE
 │   ├── orca-rpc.cjs             # reuse Orca's bundled RuntimeClient (never exports the pairing key)
-│   ├── role.sh                  # pairing role check (§5.1)
-│   └── systemd/orca-serve.service
+│   ├── role.sh                  # pairing role check (§5.1); picks node or Orca's bundled runtime
+│   ├── role.cjs                 # role logic: reads the pairing stores, never prints secrets
+│   └── systemd/orca-serve.service  # (P2)
 ├── audit/readiness.cjs          # read-only audit
-├── remote/provision.sh          # push and run from the control machine (§5)
+├── remote/provision.sh          # (P4) push and run from the control machine (§5)
 └── tests/
-    ├── bats/                    # unit tests (detect, manifest parsing, idempotency)
-    └── docker/                  # Linux matrix: ubuntu:24.04, debian:12 (amd64)
+    ├── bats/                    # unit tests (detect, manifest, role, readiness, --plan snapshots, static checks)
+    └── docker/                  # (P1) Linux matrix: ubuntu:24.04, debian:12 (amd64)
 ```
 
 ---
@@ -232,6 +266,17 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 - `--apply` refuses to continue when the device already holds the other role (saved environments on a server, or
   runtime clients seen recently on a client) and names the pairings to remove. Mobile pairings do not count.
 - `--check` reports the current role and flags a dual role.
+- How the role is read (`orca/role.sh`, read-only): saved environments come from `orca environment list --json`
+  (falling back to `orca-environments.json`); runtime clients come from the device registry `orca-devices.json` in
+  Orca's user-data directory. That directory follows upstream orcad: `$ORCA_USER_DATA` when set; on macOS
+  `~/Library/Application Support/Orca`; on Linux `$XDG_DATA_HOME/Orca`, else `~/.orca` (headless runtime), with the
+  Electron desktop path `${XDG_CONFIG_HOME:-~/.config}/Orca` as a second candidate (the first candidate holding a
+  pairing store wins). Only each entry's scope, name and last-seen time are used; tokens and device ids are never
+  printed. "Recently" means within the last 30 days (`ORCA_SETUP_RECENT_DAYS`). Names are printed only on a conflict.
+- The check fails closed. It runs on Node.js, or on Orca's bundled runtime (`ELECTRON_RUN_AS_NODE`) when Node.js is not
+  installed yet. When neither is available, or a pairing store exists but is not valid JSON or has an unexpected
+  shape, it reports `ROLE unknown` with the reason: `--apply` refuses and `--check` counts
+  `Pairing role check: UNREACHABLE`.
 
 ---
 
@@ -245,12 +290,25 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | each module has clear `--plan` output on Linux and `--apply` is re-entrant |
 | **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements | a single command from the control machine takes a new device from "paired" to "all green except interactive auth" |
 
+### 6.1 P0 port notes (differences from setup-mini.sh)
+
+- `--agy` is gone: agy is a baseline agent installed by `--apply`.
+- Optional modules run only together with `--apply` (setup-mini ran `--power`, `--apple` … immediately).
+- `--apply` requires `--role` and refuses a dual role before changing anything.
+- New baseline items from §3.1/§3.2: git-lfs, the Orca app itself, bun, omp, grok; Codex comes from npm (an existing
+  Homebrew cask install is detected and kept).
+- The Linear task source is opt-in (`--task-source linear`); setup-mini always set it.
+- Orca skills and settings are skipped when already in place; `--auth-claude` is skipped when an account is selected.
+- `--check` counts GitHub, Codex and role problems in its exit code, and also prints the `READINESS_JSON` audit.
+
 ---
 
 ## 7. Test strategy
 
 - **Static**: `shellcheck` every `*.sh`; `node --check` every `*.cjs`.
 - **Unit**: bats tests for `detect.sh` (fake `/etc/os-release`, `uname`), manifest parsing, role checks and `--plan` output snapshots.
+  Run `bats tests/bats`; every test runs in a sandbox whose `PATH` holds only fakes and a few core utilities. Refresh
+  snapshots with `UPDATE_SNAPSHOTS=1 bats tests/bats/plan.bats` and review the diff.
 - **Linux integration**: Docker matrix (ubuntu:24.04 / debian:12, amd64), running `--apply` twice plus `--check`; systemd pieces verified on a real VM.
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
@@ -266,6 +324,7 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported |
 | Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine |
 | GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification |
+| No public CLI lists the runtime clients paired with a host, so `orca/role.sh` reads Orca's device registry file | read only scope/name/last-seen; never print tokens; fail closed (`ROLE unknown`) when the file does not parse or has an unexpected shape; covered by bats tests with fake registries; switch to a CLI once one exists |
 | Dual pairing roles corrupt editor tabs across hosts | `--role` is mandatory for `--apply`; preflight refuses a dual role (§5.1) |
 | Private details leak into the public repository | local overlay for anything organization-specific; CI leak check (§7) |
 

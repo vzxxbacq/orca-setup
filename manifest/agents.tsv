@@ -1,0 +1,18 @@
+# Agent CLIs. Same columns as baseline.tsv:
+#   name    unique key; manifest/local/agents.tsv rows with the same key replace these
+#   check   command(s) that prove the agent is installed; an agent installed any other way is left alone
+#   group   baseline (installed by --apply) or the optional module that installs it
+#   macos   npm:<package> (installed with npm --prefix ~/.local) | installer:<official install.sh URL>
+#   debian  same methods; "tbd" while Linux support is unconfirmed (README section 9)
+# Order matters: bun is installed before omp, which needs it.
+
+codex	codex	baseline	npm:@openai/codex	npm:@openai/codex
+claude	claude	baseline	npm:@anthropic-ai/claude-code	npm:@anthropic-ai/claude-code
+dsh	dsh	baseline	npm:@deepseek-ai/dsh	npm:@deepseek-ai/dsh
+dsh-tui	dsh-tui	baseline	npm:@deepseek-harness-tui/dsh-tui	npm:@deepseek-harness-tui/dsh-tui
+pi	pi	baseline	npm:@earendil-works/pi-coding-agent	npm:@earendil-works/pi-coding-agent
+bun	bun	baseline	npm:bun	npm:bun
+omp	omp	baseline	npm:@oh-my-pi/pi-coding-agent	npm:@oh-my-pi/pi-coding-agent
+grok	grok	baseline	installer:https://x.ai/cli/install.sh	installer:https://x.ai/cli/install.sh
+agy	agy	baseline	installer:https://antigravity.google/cli/install.sh	tbd
+gemini	gemini	agent-gemini	npm:@google/gemini-cli	npm:@google/gemini-cli
