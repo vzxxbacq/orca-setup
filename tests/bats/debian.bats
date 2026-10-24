@@ -265,3 +265,24 @@ apply_ready() {
   run env -i HOME="$HOME" PATH=/usr/bin:/bin "$REAL_BASH" -c '. "$HOME/.profile"; . "$HOME/.profile"; printf "%s" "$PATH"'
   [ "$output" = "$HOME/.local/bin:$HOME/.grok/bin:/usr/bin:/bin" ]
 }
+
+# ------------------------------------------------------------------ alternatives
+
+@test "apt alternatives install the first package the distribution has" {
+  . "$REPO_ROOT/lib/common.sh"
+  . "$REPO_ROOT/lib/pkg-debian.sh"
+  # Debian 12: only libasound2 exists.
+  # shellcheck disable=SC2016
+  fake_cmd apt-cache 'for p; do :; done; [ "$p" = libasound2 ]'
+  [ "$(apt_pick 'libasound2t64|libasound2')" = libasound2 ]
+  run debian_install 'apt:libasound2t64|libasound2'
+  [ "$status" -eq 0 ]
+  run cat "$FAKE_LOG"
+  [ "${lines[0]}" = 'sudo env DEBIAN_FRONTEND=noninteractive apt-get update' ]
+  [ "${lines[1]}" = 'sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libasound2' ]
+  [ "${#lines[@]}" -eq 2 ]
+  debian_installed 'apt:libasound2t64|libasound2'
+  # Nothing known: the first alternative.
+  fake_cmd apt-cache 'exit 100'
+  [ "$(apt_pick 'libasound2t64|libasound2')" = libasound2t64 ]
+}

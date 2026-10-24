@@ -32,7 +32,21 @@ apt_install() {
   apt_get install -y --no-install-recommends "$@"
 }
 
-# debian_package <method>: the apt package an apt method installs.
+# apt_pick <a|b|...>: the first alternative apt can install (a package name differs between Ubuntu 24.04 and
+# Debian 12, e.g. libasound2t64 and libasound2), else the first one. Reads the package lists only; --apply refreshes
+# them first (debian_install), --plan uses whatever lists the device has.
+apt_pick() {
+  local alt rest=$1
+  while [ -n "$rest" ]; do
+    alt=${rest%%|*}
+    if have apt-cache && apt-cache show --no-all-versions "$alt" >/dev/null 2>&1; then printf '%s\n' "$alt"; return; fi
+    [ "$alt" = "$rest" ] && break
+    rest=${rest#*|}
+  done
+  printf '%s\n' "${1%%|*}"
+}
+
+# debian_package <method>: the apt package an apt method installs (alternatives "a|b" stay as they are).
 debian_package() {
   case "$1" in
     apt:*) printf '%s\n' "${1#apt:}" ;;
@@ -41,13 +55,17 @@ debian_package() {
   esac
 }
 
-# debian_installed <method>: dpkg already holds the package (the check command may be missing, or "-").
+# debian_installed <method>: dpkg already holds the package, or one of its alternatives (the check command may be
+# missing, or "-").
 debian_installed() {
-  local package
-  package=$(debian_package "$1") || return 1
+  local packages package
+  packages=$(debian_package "$1") || return 1
   have dpkg-query || return 1
-  # shellcheck disable=SC2016 # ${Status} is a dpkg-query format field
-  [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" = 'install ok installed' ]
+  for package in ${packages//|/ }; do
+    # shellcheck disable=SC2016 # ${Status} is a dpkg-query format field
+    [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" != 'install ok installed' ] || return 0
+  done
+  return 1
 }
 
 # debian_order: manifest rows (name<TAB>check<TAB>method) in install order. Distribution packages come first
@@ -181,7 +199,11 @@ github_deb_install() {
 debian_install() {
   local spec
   case "$1" in
-    apt:*) apt_install "${1#apt:}" ;;
+    apt:*)
+      spec=${1#apt:}
+      # Alternatives are resolved against fresh package lists.
+      if [ "$spec" != "${spec%%|*}" ] && [ "$DEBIAN_MODE" != plan ] && [ "$APT_UPDATED" != yes ]; then apt_update; fi
+      apt_install "$(apt_pick "$spec")" ;;
     apt-repo:*)
       spec=${1#apt-repo:}
       debian_add_repo "${spec%%:*}"

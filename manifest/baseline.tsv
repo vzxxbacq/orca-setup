@@ -5,7 +5,7 @@
 #           "lib:soname" for a shared library the dynamic linker knows (Linux)
 #   group   baseline (installed by --apply) or the optional module that installs it
 #   macos   brew:<formula> | cask:<cask> | npm:<package> | os (shipped with macOS) | - (not applicable)
-#   debian  Ubuntu 24.04 / Debian 12 (x86_64): apt:<package> | apt-repo:<repo>:<package> (repo from apt-repos.tsv) |
+#   debian  Ubuntu 24.04 / Debian 12 (x86_64): apt:<package>[|<alternative>...] | apt-repo:<repo>:<package> (repo from apt-repos.tsv) |
 #           npm:<package> | installer:<official install.sh URL> | uv-python:<version> | uv-tool:<tool> |
 #           orca-deb:<owner/repo>:<package> (.deb from the latest stable GitHub release) |
 #           docker-apt-repo:<package> (P3) | github-release:<name> (P3) | -
@@ -32,10 +32,10 @@ unzip	unzip	baseline	os	apt:unzip
 ca-certificates	-	baseline	os	apt:ca-certificates
 gnupg	gpg	baseline	-	apt:gnupg
 # Electron needs these libraries, but the Orca .deb does not depend on them (electron-builder's default list lacks
-# them), so a minimal server or container cannot start orca-ide without them. On Ubuntu 24.04 apt picks the t64
-# package (libasound2t64) for libasound2.
+# them), so a minimal server or container cannot start orca-ide without them. "a|b" installs the first package
+# the distribution has: Ubuntu 24.04 ships libasound2t64, Debian 12 libasound2.
 libgbm	lib:libgbm.so.1	baseline	-	apt:libgbm1
-libasound	lib:libasound.so.2	baseline	-	apt:libasound2
+libasound	lib:libasound.so.2	baseline	-	apt:libasound2t64|libasound2
 orca	app:Orca|orca-ide	baseline	cask:stablyai/orca/orca	orca-deb:stablyai/orca:orca-ide
 docker	app:Docker|docker	containers	cask:docker-desktop	docker-apt-repo:docker-ce
 xcodegen	xcodegen	apple	brew:xcodegen	-

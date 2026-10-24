@@ -35,7 +35,9 @@ unit=$HOME/.config/systemd/user/orca-serve.service
 state() {
   # shellcheck disable=SC2016 # dpkg-query format fields
   dpkg-query -W -f '${Package} ${Version}\n'
-  find /etc/apt/keyrings /etc/apt/sources.list.d "$HOME/.local/bin" -maxdepth 1 -print 2>/dev/null | sort
+  # A running orca-ide serve writes its own orca and orca-ide shims into ~/.local/bin (upstream, not setup.sh).
+  find /etc/apt/keyrings /etc/apt/sources.list.d "$HOME/.local/bin" -maxdepth 1 -print 2>/dev/null |
+    grep -vxF -e "$HOME/.local/bin/orca" -e "$HOME/.local/bin/orca-ide" | sort
   sha256sum /etc/apt/keyrings/* /etc/apt/sources.list.d/* "$HOME/.profile" "$HOME/.zshrc" "$unit" 2>/dev/null || true
   ls /var/lib/systemd/linger 2>/dev/null || true
 }
@@ -79,10 +81,12 @@ echo '::endgroup::'
 echo '::group::Orca'
 dpkg-query -W -f '${Package} ${Version} ${Architecture}\n' orca-ide
 [ "$(readlink -f /usr/bin/orca-ide)" = /opt/Orca/resources/bin/orca-ide ] || fail '/usr/bin/orca-ide is not the .deb CLI shim'
-orca-ide skills installed --json >"$work/skills.json" || fail 'orca-ide does not run'
-for skill in orca-cli orca-linear computer-use; do
-  node "$repo/lib/json.cjs" missing "$skill" <"$work/skills.json" | grep -q . && fail "skill $skill is not installed"
-done
+orca-ide skills list --json >/dev/null || fail 'orca-ide does not run'
+# The local dry-run plan writes nothing once every skill is in place.
+orca-ide skills install --skill orca-cli --skill orca-linear --skill computer-use --agent universal,claude-code,codex \
+  --dry-run --json >"$work/skills.json" || fail 'orca-ide skills install --dry-run failed'
+pending=$(node "$repo/lib/json.cjs" skills-pending orca-cli orca-linear computer-use <"$work/skills.json")
+[ -z "$pending" ] || fail "skills not installed: $pending"
 if [ "$mode" = client ]; then
   [ ! -e "$unit" ] || fail 'a client must not get the serve unit'
   if command -v systemd-analyze >/dev/null; then
