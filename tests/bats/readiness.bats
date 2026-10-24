@@ -38,7 +38,8 @@ audit() { OPENAI_API_KEY=sk-SECRET15 run node "$REPO_ROOT/audit/readiness.cjs"; 
 
 @test "never prints a credential value" {
   audit
-  [[ "$output" != *SECRET* ]]
+  # The seeded values are SECRET1..SECRET15; variable names such as VOLC_SECRETKEY may appear.
+  [[ ! "$output" =~ SECRET[0-9] ]]
   [[ "$output" != *sk-* ]]
   [[ "$output" != *ya29* ]]
   [[ "$output" != *Bearer* ]]

@@ -26,7 +26,7 @@ setup() {
   [ "$(detect_pkg_manager)" = brew ]
 }
 
-@test "Ubuntu 24.04 x86_64 is planned for P1, headless without a display" {
+@test "Ubuntu 24.04 x86_64 is supported, headless without a display" {
   fake_uname Linux x86_64
   fake_os_release ubuntu 24.04 debian
   [ "$(detect_os)" = linux ]
@@ -34,15 +34,15 @@ setup() {
   [ "$(detect_linux_family)" = debian ]
   [ "$(detect_pkg_manager)" = apt ]
   [ "$(detect_desktop)" = no ]
-  [ "$(detect_support)" = planned ]
+  [ "$(detect_support)" = supported ]
   DISPLAY=:0 detect_desktop | grep -qx yes
 }
 
-@test "Debian 12 x86_64 is planned; amd64 is normalized" {
+@test "Debian 12 x86_64 is supported; amd64 is normalized" {
   fake_uname Linux amd64
   fake_os_release debian 12
   [ "$(detect_arch)" = x86_64 ]
-  [ "$(detect_support)" = planned ]
+  [ "$(detect_support)" = supported ]
 }
 
 @test "Linux arm64 and Fedora are unsupported" {
@@ -50,10 +50,14 @@ setup() {
   fake_os_release ubuntu 24.04 debian
   [ "$(detect_arch)" = arm64 ]
   [ "$(detect_support)" = unsupported ]
+  [ "$(detect_unsupported_reason)" = 'Linux on arm64 is not supported: x86_64 only (no arm64).' ]
   fake_uname Linux x86_64
   fake_os_release fedora 41
   [ "$(detect_linux_family)" = fedora ]
   [ "$(detect_pkg_manager)" = dnf ]
+  [ "$(detect_support)" = unsupported ]
+  [ "$(detect_unsupported_reason)" = 'fedora 41 is not supported: only Ubuntu 24.04 and Debian 12 (x86_64).' ]
+  fake_os_release ubuntu 22.04 debian
   [ "$(detect_support)" = unsupported ]
 }
 
@@ -118,9 +122,9 @@ setup() {
   fake_present b
   is_present b
   is_present 'a|b'
-  ! is_present 'a|c'
+  run ! is_present 'a|c'
   is_present -
-  ! is_present app:Thing
+  run ! is_present app:Thing
   mkdir "$SB/Applications/Thing.app"
   is_present app:Thing
   is_present 'missing|app:Thing'

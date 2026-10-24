@@ -41,6 +41,8 @@ setup_path() {
   fi
   PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"
   export PATH
+  # The uv installer would edit shell startup files; setup.sh writes its own PATH block instead.
+  export UV_NO_MODIFY_PATH=1
   export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_ANALYTICS=1
 }
 
@@ -67,6 +69,28 @@ is_present() {
     rest=${rest#*|}
   done
   return 1
+}
+
+# Shell startup files that get the PATH block (Linux): login shells read ~/.profile, zsh reads ~/.zshrc.
+# shellcheck disable=SC2034 # used by setup.sh
+PATH_BLOCK_FILES='.profile .zshrc'
+PATH_BLOCK_BEGIN='# >>> orca-setup PATH >>>'
+PATH_BLOCK_END='# <<< orca-setup PATH <<<'
+
+# path_block_present <file>: the file already holds the orca-setup PATH block.
+path_block_present() { [ -r "$1" ] && grep -qxF -- "$PATH_BLOCK_BEGIN" "$1"; }
+
+# path_block_add <file>: append the PATH block once; the file is created when missing and nothing else in it
+# changes. User-level tools live in ~/.local/bin (npm, uv, agy) and ~/.grok/bin (grok's installer skips its
+# ~/.local/bin link when ~/.grok/bin is already on PATH, as it is under setup.sh).
+path_block_add() {
+  path_block_present "$1" && return 0
+  info "+ add the orca-setup PATH block to $1"
+  # shellcheck disable=SC2016 # expanded by the shell that reads the file
+  printf '\n%s\n%s\n%s\n%s\n' "$PATH_BLOCK_BEGIN" \
+    'case ":$PATH:" in *":$HOME/.grok/bin:"*) ;; *) export PATH="$HOME/.grok/bin:$PATH" ;; esac' \
+    'case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac' \
+    "$PATH_BLOCK_END" >>"$1"
 }
 
 # Download an official installer script, syntax-check it, then run it. Nothing is piped into a shell.
