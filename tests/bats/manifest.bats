@@ -132,5 +132,5 @@ use_copy() {
 
 @test "Debian install order: apt, repositories, installers, npm, then uv-managed tools" {
   . "$REPO_ROOT/lib/pkg-debian.sh"
-  [ "$(manifest_select baseline.tsv debian baseline | debian_order | cut -f1 | paste -sd ' ' -)" = 'git git-lfs ripgrep jq tmux cmake pkg-config build-essential curl unzip ca-certificates gnupg gh node uv pnpm python ruff orca' ]
+  [ "$(manifest_select baseline.tsv debian baseline | debian_order | cut -f1 | paste -sd ' ' -)" = 'git git-lfs ripgrep jq tmux cmake pkg-config build-essential curl unzip ca-certificates gnupg libgbm libasound gh node uv pnpm python ruff orca' ]
 }

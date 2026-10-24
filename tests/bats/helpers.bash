@@ -72,6 +72,19 @@ case \"\$1\" in
 esac"
 }
 
+# fake_skills_plan <installed-file> <args of skills install...>: the JSON of `skills install --dry-run --json`, with
+# "keep" for skills listed in the file and "write" for the others.
+# shellcheck disable=SC2016 # expanded by the stubs that source it
+FAKE_SKILLS_PLAN='plan=""; prev=""
+for a; do
+  if [ "$prev" = --skill ]; then
+    if grep -qx -- "$a" "$installed" 2>/dev/null; then kind=keep; else kind=write; fi
+    plan="$plan${plan:+,}{\"name\":\"$a\",\"ops\":[{\"kind\":\"$kind\"}]}"
+  fi
+  prev=$a
+done
+echo "{\"executed\":false,\"plan\":{\"skills\":[$plan]}}"'
+
 # A fake Orca: the app bundle (whose executable answers RPC calls) and the CLI.
 fake_orca() {
   local app=$SB/Applications/Orca.app
@@ -94,6 +107,7 @@ SH
 case "$1 $2" in
   "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || echo "{\"ok\":true,\"result\":{\"environments\":[]}}" ;;
   "skills installed") echo "{\"ok\":true,\"result\":{\"skills\":[{\"name\":\"orca-cli\"},{\"name\":\"orca-linear\"}]}}" ;;
+  "skills install") case " $* " in *" --dry-run "*) installed=$SB/mac-skills; printf "orca-cli\norca-linear\n" >"$installed"; '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca $*" >>"$FAKE_LOG" ;; esac ;;
   "status --json") echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true}}}" ;;
   *) echo "orca $*" >>"$FAKE_LOG" ;;
 esac'
@@ -142,7 +156,7 @@ esac'
 }
 
 # fake_orca_linux: Orca installed from the .deb, plus systemd. The CLI (orca-ide on PATH) answers status, skills
-# and environment list (failing without a cli-environments.json, so role.sh reads the pairing store files); the
+# install (with --dry-run from $SB/orca-skills; `skills installed` needs a runtime and fails) and environment list (failing without a cli-environments.json, so role.sh reads the pairing store files); the
 # Electron executable under $ORCA_APP_PATH answers orca-rpc calls. The runtime is up while $SB/runtime-up exists,
 # which the fake `systemctl --user start` creates. Its status reply carries a fake pairing URL, so any test can
 # prove that setup.sh never prints what the CLI reports.
@@ -150,7 +164,7 @@ fake_orca_linux() {
   export ORCA_APP_PATH=$SB/opt/Orca
   mkdir -p "$ORCA_APP_PATH/resources"
   echo '{"defaultTuiAgent":"claude","agentStatusHooksEnabled":true}' >"$SB/orca-settings.json"
-  echo '{"ok":true,"result":{"skills":[{"name":"orca-cli"},{"name":"orca-linear"},{"name":"computer-use"}]}}' >"$SB/orca-skills.json"
+  printf 'orca-cli\norca-linear\ncomputer-use\n' >"$SB/orca-skills"
   cat >"$ORCA_APP_PATH/orca-ide" <<SH
 #!$REAL_BASH
 case "\$1" in *role.cjs) exec "$REAL_NODE" "\$@" ;; esac
@@ -167,7 +181,10 @@ SH
   fake_cmd orca-ide '
 case "$1 $2" in
   "environment list") cat "$ORCA_USER_DATA/cli-environments.json" 2>/dev/null || exit 1 ;;
-  "skills installed") cat "$SB/orca-skills.json" ;;
+  "skills installed") exit 1 ;;
+  "skills install")
+    installed=$SB/orca-skills
+    case " $* " in *" --dry-run "*) '"$FAKE_SKILLS_PLAN"' ;; *) echo "orca-ide $*" >>"$FAKE_LOG"; prev=""; for a; do [ "$prev" = --skill ] && echo "$a" >>"$installed"; prev=$a; done ;; esac ;;
   "status --json")
     [ -e "$SB/runtime-up" ] || { echo "{\"ok\":false}"; exit 1; }
     echo "{\"ok\":true,\"result\":{\"runtime\":{\"reachable\":true},\"pairing\":{\"url\":\"orca://pair?code=FAKE-PAIRING-SECRET\"}}}" ;;

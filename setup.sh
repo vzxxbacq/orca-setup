@@ -231,15 +231,35 @@ desired_settings() { json settings "${task_source:--}"; }
 
 # Skills that `orca skills install` would add: "targets<TAB>skill ..." lines limited to missing skills.
 missing_skill_lines() {
-  local installed targets skills missing
-  installed=''
-  if have node; then installed=$("$ORCA_CLI" skills installed --json 2>/dev/null) || installed=''; fi
+  local targets skills missing
   while IFS=$'\t' read -r targets skills; do
-    # shellcheck disable=SC2086 # skills is a space-separated list
-    if [ -n "$installed" ]; then missing=$(printf '%s' "$installed" | json missing $skills | tr '\n' ' '); else missing="$skills"; fi
+    missing=$(pending_skills "$targets" "$skills" | tr '\n' ' ')
     missing=${missing% }
     [ -z "$missing" ] || printf '%s\t%s\n' "$targets" "$missing"
   done < <(skills_for "$OS")
+}
+
+# pending_skills <targets> <skill ...>: the skills not installed yet, one per line. The local dry-run plan of
+# `orca skills install` answers without a runtime; `orca skills installed` (which asks the runtime) is the fallback
+# for builds without --dry-run. When neither answers, every skill is pending. An installed copy that is merely
+# older than this Orca build counts as installed: --apply never upgrades.
+pending_skills() {
+  local answer
+  if have node; then
+    # shellcheck disable=SC2046,SC2086 # one argument per line / a space-separated list; names contain no whitespace
+    if answer=$("$ORCA_CLI" $(skills_args "$1" "$2") --dry-run --json 2>/dev/null) &&
+      answer=$(printf '%s' "$answer" | json skills-pending $2 2>/dev/null); then
+      [ -z "$answer" ] || printf '%s\n' "$answer"
+      return 0
+    fi
+    # shellcheck disable=SC2086 # a space-separated list
+    if answer=$("$ORCA_CLI" skills installed --json 2>/dev/null) && answer=$(printf '%s' "$answer" | json missing $2 2>/dev/null); then
+      [ -z "$answer" ] || printf '%s\n' "$answer"
+      return 0
+    fi
+  fi
+  # shellcheck disable=SC2086
+  printf '%s\n' $2
 }
 
 # skills_args <targets> <skill ...>: arguments for `orca skills install`, one per line.
