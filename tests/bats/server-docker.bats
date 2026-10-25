@@ -157,6 +157,28 @@ only_present() {
   [ ! -e "$SB/apt/sources.list.d/docker.list" ]
 }
 
+@test "Docker packages without a docker command are refused in --plan without stopping it" {
+  echo containerd >>"$FAKE_DPKG"
+  run_setup --plan --role server --pairing-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'refuse   Docker packages from another source are installed (containerd), but there is no docker command'* ]]
+  [[ "$output" == *'Directories (--apply'* ]]
+  no_calls
+}
+
+@test "a Docker that answers without the docker group (rootless) is used without joining it" {
+  image_tools
+  cp "$SB/docker-stub" "$SB/bin/docker"
+  touch "$SB/docker/session-group"
+  run_setup --plan --role server --pairing-address "$ADDRESS"
+  [[ "$output" == *'present  Docker answers builder without the docker group'* ]]
+  [[ "$output" != *usermod* ]]
+  apply_server
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'PRESENT Docker answers builder without the docker group'* ]]
+  ! grep -q usermod "$FAKE_LOG"
+}
+
 @test "Podman is refused, as the docker command or on its own" {
   image_tools
   cp "$SB/docker-stub" "$SB/bin/docker"
@@ -234,6 +256,36 @@ only_present() {
   # No single file is mounted: Claude's .claude.json lives in ~/.claude through CLAUDE_CONFIG_DIR.
   [[ "$(cat "$COMPOSE")" != *'.claude.json"'* ]]
   [[ "$(cat "$COMPOSE")" != *mem_limit* ]]
+  # The host's manifest/local/, read-only, and a log that leaves with its container.
+  [ "$(grep -A2 "source: \"$HOME/.config/orca-setup/docker/manifest-local\"" "$COMPOSE" | tail -n 2 | paste -sd ' ' -)" = \
+    '        target: "/opt/orca-setup/manifest/local"         read_only: true' ]
+  grep -qxF '      driver: json-file' "$COMPOSE"
+}
+
+@test "the host's manifest/local/ reaches the container as its overlay, and bad mount rows stop the run" {
+  image_tools
+  existing_docker
+  cp -R "$REPO_ROOT/manifest" "$SB/manifest"
+  export ORCA_SETUP_MANIFEST_DIR=$SB/manifest
+  mkdir -p "$SB/manifest/local"
+  echo '{"settings":{"defaultTuiAgent":"claude"}}' >"$SB/manifest/local/orca-settings.json"
+  apply_server
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'+ copy manifest/local to ~/.config/orca-setup/docker/manifest-local'* ]]
+  "$REAL_DIFF" "$SB/manifest/local/orca-settings.json" "$HOME/.config/orca-setup/docker/manifest-local/orca-settings.json"
+  apply_server
+  [ "$status" -eq 0 ]
+  only_present
+  echo '{"settings":{"defaultTuiAgent":"codex"}}' >"$SB/manifest/local/orca-settings.json"
+  apply_server
+  [[ "$output" == *'+ copy manifest/local to'* ]]
+  grep -q codex "$HOME/.config/orca-setup/docker/manifest-local/orca-settings.json"
+  : >"$FAKE_LOG"
+  printf '/data\tdata\n' >"$SB/manifest/local/server-mounts.tsv"
+  apply_server
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'manifest/server-mounts.tsv (or its local overlay): /data must be a path relative to the home directory'* ]]
+  no_calls
 }
 
 @test "container limits come from manifest/local/server-limits.env; unknown keys and bad values stop the render" {
@@ -262,7 +314,7 @@ only_present() {
   image_tools
   existing_docker
   local dir
-  for dir in relative/dir / "$HOME" "$HOME/orca/inner" /etc/orca "$HOME/.codex/work" "/srv/my dir"; do
+  for dir in relative/dir / "$HOME" "$HOME/orca/inner" /etc/orca "$HOME/.codex/work" "$HOME/.codex" "$HOME/.orca" "$HOME/.config" "/srv/my dir"; do
     run_setup --plan --role server --pairing-address "$ADDRESS" --workdir "$dir"
     [ "$status" -eq 1 ] || { echo "accepted: $dir"; return 1; }
     [[ "$output" == *"--workdir"*"is refused"* ]] || [[ "$output" == *'--workdir needs'* ]]

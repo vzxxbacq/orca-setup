@@ -218,12 +218,14 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
 1. **Docker Engine.** A host without Docker gets Docker Engine from Docker's apt repository through the verified path
    of `--containers` (§3.5): the baseline rows `manifest/server-host.tsv` names (`curl`, `ca-certificates`, `gnupg`),
    then the `containers` rows. A working Docker installed any other way (CLI, reachable daemon, Compose plugin: Docker's
-   convenience script, the distribution's packages, a CI runner) is used as it is and never changed. Podman (as the
-   `docker` command or on its own), Docker packages without a `docker` command, a missing Compose plugin and a daemon
-   that does not answer are refused with the reason. Nothing else is installed on the host: no Node.js, agents or
-   Orca `.deb`.
-2. **The docker group.** `sudo usermod -aG docker $USER` when the user is not a member; the group is root-equivalent
-   (its members control the Docker daemon), and `--plan` says so. The running session only gets the group at its next
+   convenience script, the distribution's packages, a CI runner) is used as it is and never changed; packages from
+   another source (`manifest/apt-conflicts.tsv`) count as such even where orca-setup's repository is set up already.
+   Podman (as the `docker` command or on its own), Docker packages without a `docker` command, a missing Compose plugin
+   and a daemon that does not answer are refused with the reason. Nothing else is installed on the host: no Node.js,
+   agents or Orca `.deb`.
+2. **The docker group.** `sudo usermod -aG docker $USER` when the user is not a member and Docker does not already
+   answer the user without it (rootless Docker, for example); the group is root-equivalent (its members control the
+   Docker daemon), and `--plan` says so. The running session only gets the group at its next
    login, so until then `setup.sh` runs `docker` through `sg docker`, which asks for nothing because the group
    database already lists the user (`NOTE docker runs through "sg docker" in this session`).
 3. **Directories.** Every mount of `manifest/server-mounts.tsv`, created as the user when missing (an existing one
@@ -232,7 +234,9 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
    registry, sealed integration credentials), and the agents' directories `~/.codex`, `~/.claude`, `~/.config/gh`,
    `~/.gemini`, `~/.antigravity`, `~/.grok`, `~/.dsh`, `~/.dsh-tui`, `~/.pi` and `~/.omp`. Then the container's home
    `~/.local/share/orca-setup/home` (`$XDG_DATA_HOME` honoured) with the mount points inside it, so that Docker never
-   creates one as root.
+   creates one as root, and `~/.config/orca-setup/docker/manifest-local`, a copy of this checkout's `manifest/local/`
+   (refreshed when it differs), which the container reads read-only as its own overlay (§3.7). A local
+   `server-mounts.tsv` row that is not a plain relative path stops the run before anything changes.
 4. **The image.** The first `--apply` pulls `ghcr.io/vzxxbacq/orca-server:main` and records the digest it got in
    `~/.config/orca-setup/docker/image.lock` (`$XDG_CONFIG_HOME` honoured). Re-runs keep that digest (a locked image
    missing from the host is pulled by its digest, never by tag); only `--upgrade-image` pulls `main` again and, when
@@ -253,7 +257,9 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
      `/tmp`, every capability dropped and `no-new-privileges`; no `sudo` and no Docker in the image;
    - the container's home is `~/.local/share/orca-setup/home`, so a file written outside the mounts either persists
      there or fails (the root filesystem is read-only), and the mounts above are bind-mounted at the same absolute
-     path (`create_host_path: false`: a missing directory is an error, never created as root).
+     path (`create_host_path: false`: a missing directory is an error, never created as root);
+   - the `json-file` log driver (rotated at 10 MB, three files), whatever the daemon's default is, so a removed
+     container takes its log with it.
 7. It waits up to 120 s (`ORCA_SETUP_SERVE_WAIT`) until `orca-ide status --json` inside the container reports the
    runtime reachable (the reply is read there and never printed), then installs the missing skills and aligns the
    settings with `docker exec orca-server /opt/orca-setup/setup.sh --apply --role server`, the image's copy of these
@@ -313,8 +319,9 @@ clear                                   # drop the URL from the terminal
 
 This is upstream's documented way for a service-managed server ("pair clients … with `orca serve` in a terminal while
 the service is stopped"). `docker compose run --rm` uses the same image, user, home and mounts, so the offer is stored
-in the device registry in `~/.orca` and the restarted container accepts it; the removed run container takes its log
-with it. Stopping the container ends the terminal sessions running in it. On the client, paste it in
+in the device registry in `~/.orca` and the restarted container accepts it; the run container logs to `json-file`
+(set in `compose.yaml`, not the daemon's default, which could be journald or a remote driver), so removing it takes
+its log with it. Stopping the container ends the terminal sessions running in it. On the client, paste it in
 **Settings → Remote Orca Servers → Add Server**, or read it without echo instead of putting it on a command line (the
 shell history would keep it): `read -rs code && orca environment add --name <server> --pairing-code "$code"`.
 `--mobile-pairing` does the same for Orca Mobile. If a link leaks before it is used, generate a new one: that replaces
@@ -459,8 +466,10 @@ Merge rules: a TSV row in `manifest/local/<file>.tsv` whose first column matches
 other rows are appended (`server-mounts.tsv` too: extra directories for the server container).
 `manifest/local/orca-settings.json` is deep-merged over the shipped file (objects merge, values and arrays replace).
 For a Linux server, `manifest/local/server-limits.env` sets container limits (keys in `manifest/server-limits.env`),
-and `manifest/local/Dockerfile` is built on top of the locked Orca server image and runs instead (§3.3.2). Overlay
-auth modules are not implemented yet.
+and `manifest/local/Dockerfile` is built on top of the locked Orca server image and runs instead (§3.3.2). The setup.sh
+inside the container (skills, settings, `--check`) reads the copy of `manifest/local/` that the last `--apply` put in
+`~/.config/orca-setup/docker/manifest-local`, so an overlay change reaches it with the next `--apply`. Overlay auth
+modules are not implemented yet.
 
 ---
 
@@ -877,6 +886,10 @@ A publish job runs only on pushes to `main`.
 - *Not covered by CI*: pairing, the logins, a pull from GHCR (CI pulls from its local registry), a reboot, and a host
   without Docker (bats covers that install path against fakes; the client containers install Docker Engine for real).
 - A pre-P5 native unit (`orca-serve.service` with orca-setup's marker) stops `--apply --role server` until removed.
+- *Overlay and logs.* The image has no `manifest/local/`; the host's is copied to
+  `~/.config/orca-setup/docker/manifest-local` and mounted read-only at `/opt/orca-setup/manifest/local`, so local
+  settings and skills apply inside the container. The service pins the `json-file` log driver so that the pairing
+  run's log is removed with it whatever the daemon's default driver is.
 
 ---
 

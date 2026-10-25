@@ -45,6 +45,7 @@ Directories (--apply; owned by builder, at the same path in the container):
   create   ~/.pi (Pi)
   create   ~/.omp (OMP)
   create   ~/.local/share/orca-setup/home (the container's home directory (files written there persist))
+  create   ~/.config/orca-setup/docker/manifest-local (a copy of manifest/local/, read-only in the container)
 Image (--apply):
   pull     ghcr.io/vzxxbacq/orca-server:main and lock its digest in ~/.config/orca-setup/docker/image.lock
            re-runs keep the locked digest; only --upgrade-image pulls a newer one

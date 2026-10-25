@@ -82,23 +82,34 @@ server_workdir_problem() {
       /opt/orca-setup/* | /opt/orca-agents/* | /opt/Orca/*)
       echo 'it is a system directory, or one the image needs'; return ;;
   esac
+  # Every other mount (by its manifest key, so a workdir equal to one of them is caught too).
   while IFS=$'\t' read -r path _; do
-    [ "$path" != "$dir" ] || continue
-    case "$dir/" in "$path"/*) echo "it is inside $(tilde "$path"), which is mounted for another purpose"; return ;; esac
+    [ "$path" != '{workdir}' ] || continue
+    path=$HOME/$path
+    case "$dir/" in "$path"/*) echo "it is or is inside $(tilde "$path"), which is mounted for another purpose"; return ;; esac
     case "$path/" in "$dir"/*) echo "it contains $(tilde "$path"), which is mounted for another purpose"; return ;; esac
-  done < <(server_mounts "$dir")
+  done < <(manifest_rows server-mounts.tsv)
 }
 
-# server_mounts <workdir>: "absolute path<TAB>contents" for every directory of manifest/server-mounts.tsv.
+# server_mounts_problem: why a row of manifest/server-mounts.tsv (or its local overlay) cannot be mounted; empty when
+# every row can. setup.sh checks this before anything else, so a bad local row stops the run.
+server_mounts_problem() {
+  local path
+  while IFS=$'\t' read -r path _; do
+    case "$path" in
+      '{workdir}') continue ;;
+      /* | *..* | '') echo "$path must be a path relative to the home directory"; return ;;
+    esac
+    [ -z "$(server_path_problem "$HOME/$path")" ] || { echo "$path cannot be mounted: $(server_path_problem "$HOME/$path")"; return; }
+  done < <(manifest_rows server-mounts.tsv)
+}
+
+# server_mounts <workdir>: "absolute path<TAB>contents" for every directory of manifest/server-mounts.tsv (checked
+# by server_mounts_problem first).
 server_mounts() {
   local path contents
   while IFS=$'\t' read -r path contents; do
-    case "$path" in
-      '{workdir}') path=$1 ;;
-      /* | *..* | '') die "manifest/server-mounts.tsv: $path must be a path relative to the home directory" ;;
-      *) path=$HOME/$path ;;
-    esac
-    [ -z "$(server_path_problem "$path")" ] || die "manifest/server-mounts.tsv: $path cannot be mounted: $(server_path_problem "$path")"
+    case "$path" in '{workdir}') path=$1 ;; *) path=$HOME/$path ;; esac
     printf '%s\t%s\n' "$path" "$contents"
   done < <(manifest_rows server-mounts.tsv)
 }
@@ -111,6 +122,7 @@ server_dirs() {
     [ "$path" != "$1" ] || printf '%s\t%s\n' "$path/projects" 'project checkouts' "$path/workspaces" "Orca's worktrees"
   done < <(server_mounts "$1")
   printf '%s\t%s\n' "$(server_home)" "the container's home directory (files written there persist)"
+  printf '%s\t%s\n' "$(server_overlay_dir)" "a copy of manifest/local/, read-only in the container"
 }
 
 # server_mount_points <workdir>: the mount points inside the container's home, which must exist (as yours) before
@@ -156,15 +168,22 @@ server_limit_lines() {
   ' "$base" "$overlay")
 }
 
-server_volume() { # <host path> <container path>
-  printf '      - type: bind\n        source: "%s"\n        target: "%s"\n        bind:\n          create_host_path: false\n' "$1" "$2"
+server_volume() { # <host path> <container path> [ro]
+  printf '      - type: bind\n        source: "%s"\n        target: "%s"\n' "$1" "$2"
+  [ "${3:-}" != ro ] || printf '        read_only: true\n'
+  printf '        bind:\n          create_host_path: false\n'
 }
+
+# The host's manifest/local/ (README section 3.7) as the container's own /opt/orca-setup/manifest/local (read-only):
+# the image has no overlay, and the setup.sh inside the container applies the Orca settings and skills.
+server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 
 # server_compose_render <image> <workdir> <pairing-address> <config>: the compose.yaml content.
 server_compose_render() {
   local volumes limits path
   volumes=$(server_volume "$(server_home)" "$HOME"
-    while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")) || return 1
+    while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")
+    server_volume "$(server_overlay_dir)" "$ORCA_SERVER_ROOT/manifest/local" ro) || return 1
   limits=$(server_limit_lines) || return 1
   # Values go through ENVIRON: awk -v would interpret backslashes and cannot hold several lines everywhere.
   RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_CONFIG=$4 RENDER_PORT=$ORCA_SERVER_PORT \
@@ -238,11 +257,28 @@ server_local_files() { # <dir>: every file below it, in a stable order
   done | LC_ALL=C sort
 }
 
+# server_tree_sum <dir>: a checksum of every file below the directory, names and contents (the same for a missing or
+# an empty one).
+server_tree_sum() {
+  local file
+  [ ! -d "$1" ] || while IFS= read -r file; do printf '%s\n' "${file#"$1"/}"; cat "$file"; done < <(server_local_files "$1")
+}
+
 server_local_tag() { # <base image>
-  local dir file
-  dir=$(dirname "$(server_local_dockerfile)")
-  { printf '%s\n' "$1"; while IFS= read -r file; do printf '%s\n' "${file#"$dir"/}"; cat "$file"; done < <(server_local_files "$dir"); } |
+  { printf '%s\n' "$1"; server_tree_sum "$(dirname "$(server_local_dockerfile)")"; } |
     cksum | awk '{ print "orca-setup/orca-server-local:" $1 "-" $2 }'
+}
+
+# server_overlay_apply: copy manifest/local/ to server_overlay_dir when they differ (an empty directory without one).
+server_overlay_apply() {
+  local source="$ORCA_SETUP_MANIFEST_DIR/local" target
+  target=$(server_overlay_dir)
+  if [ -d "$target" ] && [ "$(server_tree_sum "$source" | cksum)" = "$(server_tree_sum "$target" | cksum)" ]; then return 0; fi
+  if [ -d "$source" ]; then info "+ copy manifest/local to $(tilde "$target") (the container's overlay)"
+  else info "+ mkdir -p $(tilde "$target") (the container's overlay; there is no manifest/local)"; fi
+  rm -rf -- "$target"
+  mkdir -p "$target"
+  [ ! -d "$source" ] || cp -R "$source"/. "$target"/
 }
 
 # server_image_apply: pull or keep the locked image (and build the local one); sets SERVER_IMAGE for compose.yaml.
@@ -459,6 +495,7 @@ server_apply() { # <workdir>
   fi
   docker_apply
   server_dirs_apply "$1"
+  server_overlay_apply
   server_image_apply
   server_role_check
   server_container_apply "$1"
@@ -478,10 +515,11 @@ server_apply() { # <workdir>
 
 # ---------------------------------------------------------------- check
 
-# server_newest_digest <reference>: the registry's current digest for the reference, without pulling it.
+# server_newest_digest <reference>: the registry's current digest for the reference, without pulling it. buildx
+# prints the descriptor as indented JSON; the index's own digest comes before those of its manifests.
 server_newest_digest() {
   dk buildx imagetools inspect --format '{{json .Manifest}}' "$1" 2>/dev/null |
-    grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -n 1 | sed 's/^"digest":"//; s/"$//'
+    grep -o '"digest": *"sha256:[0-9a-f]\{64\}"' | head -n 1 | sed 's/.*"\(sha256:[0-9a-f]*\)"$/\1/'
 }
 
 # server_check_host <workdir>: the host's items (report from setup.sh). Sets SERVER_CONTAINER (the container's

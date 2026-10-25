@@ -171,6 +171,8 @@ if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported
   WORKDIR=${WORKDIR:-$HOME/orca}
   problem=$(server_path_problem "$HOME")
   [ -z "$problem" ] || die "your home directory $HOME cannot be mounted into the Orca server container: $problem."
+  problem=$(server_mounts_problem)
+  [ -z "$problem" ] || die "manifest/server-mounts.tsv (or its local overlay): $problem."
   problem=$(server_workdir_problem "$WORKDIR")
   [ -z "$problem" ] || die "--workdir $WORKDIR is refused: $problem."
 elif [ "$SERVER_HOST" = no ] && { [ -n "$workdir" ] || [ "$upgrade_image" = yes ]; }; then
@@ -506,7 +508,9 @@ auth_state() { CHECK_AUTH+=("$1"$'\t'"$2"$'\t'"$3"); }
 check_tools() { # check_tools <manifest> <group>
   local name check method
   while IFS=$'\t' read -r name check method; do
-    if row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; record 0 "$name" present
+    if [ "$REPORT_COLLECT" = yes ]; then
+      if row_present "$check" "$method"; then report present "$name"; else report MISSING "$name"; fi
+    elif row_present "$check" "$method"; then printf 'PRESENT %s\n' "$name"; record 0 "$name" present
     else printf 'MISSING %s\n' "$name"; missing=$((missing + 1)); record 1 "$name" MISSING; fi
   done < <(platform_rows "$1" "$2")
 }

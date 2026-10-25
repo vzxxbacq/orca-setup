@@ -337,7 +337,8 @@ case "$1" in
   buildx)
     ref=${!#}
     [ -r "$SB/registry/$(key "$ref")" ] || exit 1
-    printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%s","size":855,"manifests":[{"digest":"sha256:%s"}]}\n' \
+    # Indented, as buildx's json template function prints it.
+    printf '{\n  "schemaVersion": 2,\n  "mediaType": "application/vnd.oci.image.index.v1+json",\n  "digest": "sha256:%s",\n  "size": 855,\n  "manifests": [\n    {\n      "digest": "sha256:%s"\n    }\n  ]\n}\n' \
       "$(cat "$SB/registry/$(key "$ref")")" 1111111111111111111111111111111111111111111111111111111111111111 ;;
   *) echo "${log% }" >>"$FAKE_LOG" ;;
 esac

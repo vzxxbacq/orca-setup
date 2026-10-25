@@ -21,10 +21,13 @@ docker_is_podman() {
 #   existing  Docker from another source (Docker's convenience script, distribution packages, a hand-made
 #             repository, a CI runner): used as it is, never changed, once it works
 #   podman    Podman: refused
+# Packages from another source win over orca-setup's repository setup (as for --containers), so that a leftover
+# repository never makes apt replace them.
 docker_engine_state() {
   if docker_is_podman; then echo podman
+  elif [ -n "$(debian_conflicts docker)" ]; then echo existing
   elif apt_repo_configured docker; then echo repo
-  elif have docker || debian_installed apt:docker-ce || [ -n "$(debian_conflicts docker)" ]; then echo existing
+  elif have docker || debian_installed apt:docker-ce; then echo existing
   else echo install; fi
 }
 
@@ -87,14 +90,15 @@ docker_plan() {
       return 0 ;;
     install | repo) process_rows plan 3< <(docker_host_rows) ;;
     existing)
-      version=$(docker --version 2>/dev/null | head -n 1)
       if have docker && [ -n "$(docker_compose_version)" ]; then
+        version=$(docker --version 2>/dev/null | head -n 1) || version=''
         info "  present  ${version:-docker} from another source, with Compose $(docker_compose_version); used as it is"
       else
         info "  refuse   $(docker_problem); --apply stops here"
       fi ;;
   esac
   if docker_group_member; then info "  present  $user in the docker group"
+  elif docker_connect && [ "$DOCKER_VIA" = direct ]; then info "  present  Docker answers $user without the docker group"
   else
     info '  join     the docker group (root-equivalent: its members control the Docker daemon)'
     DEBIAN_MODE=plan as_root usermod -aG docker "$user"
@@ -113,11 +117,14 @@ docker_apply() {
     existing) have docker && info "PRESENT docker ($(docker --version 2>/dev/null | head -n 1); from another source, used as it is)" ;;
   esac
   if docker_group_member; then info "PRESENT $user in the docker group"
+  elif docker_connect && [ "$DOCKER_VIA" = direct ]; then
+    # Rootless Docker, or a socket opened to the user another way: no root-equivalent group is needed.
+    info "PRESENT Docker answers $user without the docker group"
   else
     as_root usermod -aG docker "$user"
     docker_group_member || die "$user is still not in the docker group."
   fi
-  docker_connect || true
+  [ -n "$DOCKER_VIA" ] || docker_connect || true
   problem=$(docker_problem)
   [ -z "$problem" ] || die "Docker cannot run the Orca server: $problem."
   [ "$DOCKER_VIA" != sg ] ||

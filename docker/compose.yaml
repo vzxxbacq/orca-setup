@@ -38,6 +38,13 @@ services:
       CLAUDE_CONFIG_DIR: "@HOME@/.claude"
     labels:
       org.orca-setup.config: "@CONFIG@"
+    # The log stays next to the container whatever the daemon's default driver is, so the removed container of a
+    # `docker compose run --rm` (pairing) takes its log with it; journald, syslog or a remote driver would keep it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 @LIMITS@
     # Your home directory in the container is a dedicated host directory; the rest are the same paths as on the host
     # (manifest/server-mounts.tsv). A missing host directory is an error, never created by Docker as root.
