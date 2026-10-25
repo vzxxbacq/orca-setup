@@ -17,7 +17,7 @@ auth_linear() {
   if [ "$PLATFORM" = debian ]; then
     # The key is stored by this device's Orca runtime; a client without one has nowhere to keep it.
     [ -n "$status" ] ||
-      die "the Orca runtime on this device does not answer; on a server start it (systemctl --user start $ORCA_SERVE_UNIT) and rerun --auth-linear."
+      die "the Orca runtime on this device does not answer; a Linux client has none (connect Linear on its server), and on a server see: docker logs $ORCA_SERVER_NAME (on the host)."
     if [ "$(detect_desktop)" = yes ] && have xdg-open; then xdg-open "$LINEAR_API_SETTINGS_URL" >/dev/null 2>&1 || true; fi
     info "Create a personal API key at $LINEAR_API_SETTINGS_URL"
   elif [ "$(detect_desktop)" = yes ] && have open; then

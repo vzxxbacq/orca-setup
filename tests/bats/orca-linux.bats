@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Orca on Linux (P2): the .deb install, the pairing address, the systemd user unit, and client versus server
-# behaviour, against fake curl, sudo, systemctl, loginctl and Orca. Nothing here runs apt, sudo or systemd.
+# Orca on Linux (P2): the .deb install, the pairing address and the Linux client, against fake curl, sudo and Orca.
+# Nothing here runs apt or sudo. The Linux server runs in Docker and has its own tests (server-docker.bats).
 
 load helpers
 
@@ -32,8 +32,6 @@ ready() {
   printf '# >>> orca-setup PATH >>>\n' >"$HOME/.profile"
   printf '# >>> orca-setup PATH >>>\n' >"$HOME/.zshrc"
 }
-
-unit_file() { printf '%s\n' "$HOME/.config/systemd/user/orca-serve.service"; }
 
 # ------------------------------------------------------------------ the .deb
 
@@ -110,7 +108,7 @@ deb_install() {
 
 @test "pairing addresses: private IPv4 and host names pass; loopback, wildcards and junk are refused" {
   . "$REPO_ROOT/lib/common.sh"
-  . "$REPO_ROOT/lib/orca-serve.sh"
+  . "$REPO_ROOT/lib/orca-server.sh"
   local address
   for address in "$ADDRESS" 198.51.100.7 devbox devbox.example.net devbox.tailnet-name.ts.net.; do
     [ -z "$(pairing_address_problem "$address")" ] || { echo "refused: $address"; return 1; }
@@ -148,76 +146,7 @@ deb_install() {
   no_calls
 }
 
-# ------------------------------------------------------------------ unit
-
-@test "the unit renders the supervised server, the address and the optional terminal limits" {
-  . "$REPO_ROOT/lib/common.sh"
-  cp -R "$REPO_ROOT/manifest" "$SB/manifest"
-  export ORCA_SETUP_MANIFEST_DIR=$SB/manifest
-  . "$REPO_ROOT/lib/orca-serve.sh"
-  run serve_unit_render /usr/bin/orca-ide "$ADDRESS"
-  [ "$status" -eq 0 ]
-  [ "${lines[0]}" = '# orca-setup: Orca server for this user' ]
-  [[ "$output" == *"ExecStart=/usr/bin/orca-ide serve --supervise --no-pairing --port 6768 --pairing-address $ADDRESS"* ]]
-  [[ "$output" == *'Environment=PATH=%h/.local/bin:%h/.grok/bin:'* ]]
-  [[ "$output" == *'KillMode=process'* ]]
-  [[ "$output" != *'@'* ]]
-  [[ "$output" != *'Environment=ORCA_'* ]]
-  mkdir -p "$SB/manifest/local"
-  printf '# limits\nORCA_TERMINAL_MEMORY_MAX=8G\nORCA_TERMINAL_MEMORY_SWAP_MAX=0\nORCA_TERMINAL_MEMORY_MAX=16G\n' >"$SB/manifest/local/orca-serve.env"
-  run serve_unit_render /usr/bin/orca-ide "$ADDRESS"
-  [ "$status" -eq 0 ]
-  [ "$(grep -c '^Environment=ORCA_' <<<"$output")" -eq 2 ]
-  [[ "$output" == *$'Environment=ORCA_TERMINAL_MEMORY_MAX=16G\nEnvironment=ORCA_TERMINAL_MEMORY_SWAP_MAX=0\nRestart=on-failure'* ]]
-  printf 'ORCA_TERMINAL_PROCESS_CEILING=8\n' >"$SB/manifest/local/orca-serve.env"
-  run serve_unit_render /usr/bin/orca-ide "$ADDRESS"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *'must be a number, 64 or more'* ]]
-  printf 'LD_PRELOAD=/tmp/x.so\n' >"$SB/manifest/local/orca-serve.env"
-  run serve_unit_render /usr/bin/orca-ide "$ADDRESS"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *'unknown key LD_PRELOAD'* ]]
-}
-
-@test "the unit starts the .deb CLI, not a shim a running server puts on PATH" {
-  . "$REPO_ROOT/lib/common.sh"
-  . "$REPO_ROOT/lib/orca-serve.sh"
-  ORCA_CLI=orca-ide
-  fake_present orca-ide
-  [ "$(serve_command)" = "$SB/bin/orca-ide" ]
-  mkdir -p "$SB/usr/bin"
-  printf '#!/bin/sh\n' >"$SB/usr/bin/orca-ide"
-  chmod +x "$SB/usr/bin/orca-ide"
-  export ORCA_SETUP_DEB_CLI=$SB/usr/bin/orca-ide
-  [ "$(serve_command)" = "$SB/usr/bin/orca-ide" ]
-}
-
-@test "the rendered unit passes systemd-analyze verify" {
-  local real
-  real=$(PATH=/usr/bin:/bin command -v systemd-analyze) || skip 'systemd-analyze is not installed'
-  . "$REPO_ROOT/lib/common.sh"
-  . "$REPO_ROOT/lib/orca-serve.sh"
-  fake_present orca-ide
-  serve_unit_render "$SB/bin/orca-ide" "$ADDRESS" >"$SB/orca-serve.service"
-  run env PATH=/usr/bin:/bin "$real" verify --man=no "$SB/orca-serve.service"
-  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-}
-
 # ------------------------------------------------------------------ plan
-
-@test "--plan --role server lists the .deb, linger with its sudo command, and the unit" {
-  fake_baseline_present
-  rm -f "$SB/bin/orca-ide"
-  echo ca-certificates >>"$FAKE_DPKG"
-  # Orca is not installed yet, so the unit names the CLI the .deb will put there.
-  [ ! -e /usr/bin/orca-ide ] || skip 'this machine has /usr/bin/orca-ide'
-  export ORCA_SETUP_DEB_CLI=/usr/bin/orca-ide
-  run_setup --plan --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 0 ]
-  snapshot plan-linux-server.txt
-  no_secret
-  no_calls
-}
 
 @test "--plan --role client shows no unit, no linger and no sudo outside the .deb" {
   ready
@@ -233,106 +162,14 @@ deb_install() {
 
 # ------------------------------------------------------------------ apply and check
 
-@test "--apply --role server enables linger, writes and starts the unit, then a second run changes nothing" {
-  ready
-  run_setup --apply --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  no_secret
-  [ "${lines[${#lines[@]} - 1]}" = BASELINE_DONE ]
-  run cat "$FAKE_LOG"
-  [ "$output" = "sudo loginctl enable-linger builder
-systemctl --user daemon-reload
-systemctl --user enable orca-serve.service
-systemctl --user start orca-serve.service" ]
-  grep -qxF "ExecStart=$SB/bin/orca-ide serve --supervise --no-pairing --port 6768 --pairing-address $ADDRESS" "$(unit_file)"
-  [ "$(cat "$SB/orca-settings.json")" = '{"defaultTuiAgent":"codex","agentStatusHooksEnabled":true}' ]
-
-  : >"$FAKE_LOG"
-  run_setup --apply --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 0 ]
-  no_calls
-  no_secret
-  [ -z "$(grep -e '^+ ' <<<"$output")" ] || { echo "$output"; return 1; }
-  [[ "$output" == *'PRESENT linger for builder'* ]]
-  [[ "$output" == *'PRESENT orca-serve.service active'* ]]
-  [[ "$output" == *'PRESENT Orca settings'* ]]
-
-  # A new address rewrites the unit and restarts the running server.
-  run_setup --apply --role server --pairing-address 198.51.100.7
-  [ "$status" -eq 0 ]
-  grep -q -- '--pairing-address 198.51.100.7$' "$(unit_file)"
-  run cat "$FAKE_LOG"
-  [ "$output" = "systemctl --user daemon-reload
-systemctl --user restart orca-serve.service" ]
-}
-
-@test "--apply --role server keeps a unit that orca-setup did not write" {
-  ready
-  mkdir -p "$(dirname "$(unit_file)")"
-  printf '[Service]\nExecStart=/usr/bin/orca-ide serve --supervise --no-pairing\n' >"$(unit_file)"
-  echo yes >"$SB/linger"
-  run_setup --apply --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *'PRESENT orca-serve.service (not written by orca-setup; left unchanged)'* ]]
-  [ "$(head -n 1 "$(unit_file)")" = '[Service]' ]
-}
-
-@test "--apply --role server stops when the runtime never becomes reachable" {
-  ready
-  # shellcheck disable=SC2016
-  fake_cmd systemctl '[ "$2" = is-enabled ] || [ "$2" = is-active ] && exit 3; echo "systemctl $*" >>"$FAKE_LOG"'
-  export ORCA_SETUP_SERVE_WAIT=0
-  run_setup --apply --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *'the Orca runtime is not reachable 0s after starting orca-serve.service'* ]]
-  [[ "$output" != *BASELINE_DONE* ]]
-}
-
 @test "--apply --role client installs no unit and asks for no linger" {
   ready
   run_setup --apply --role client
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   no_secret
   no_calls
-  [ ! -e "$(unit_file)" ]
+  [ ! -e "$HOME/.config/orca-setup/docker/compose.yaml" ]
   [[ "$output" == *'SKIP Orca settings: no Orca runtime runs on this client'* ]]
   [[ "$output" != *orca-serve* ]]
 }
 
-@test "--check on a server counts the unit, linger and the runtime, and prints no secret" {
-  ready
-  run_setup --apply --role server --pairing-address "$ADDRESS"
-  [ "$status" -eq 0 ]
-  run_setup --check --role server
-  no_secret
-  [[ "$output" == *'Orca serve unit: active'* ]]
-  [[ "$output" == *'Linger: on'* ]]
-  [[ "$output" == *'Orca runtime: reachable'* ]]
-  [[ "$output" == *'Orca skills: installed'* ]]
-  [[ "$output" == *'Orca settings: aligned'* ]]
-  [[ "$output" == *'Orca Codex: PENDING'* ]]
-  [ "$status" -eq 1 ] || { echo "$output"; return 1; }
-  # Without --role the unit file marks the device as a server.
-  run_setup --check
-  [ "$status" -eq 1 ]
-  [[ "$output" == *'Orca serve unit: active'* ]]
-
-  rm "$SB/runtime-up"
-  echo no >"$SB/linger"
-  run_setup --check --role server
-  no_secret
-  [[ "$output" == *'Orca serve unit: INACTIVE (inactive)'* ]]
-  [[ "$output" == *'Linger: OFF'* ]]
-  [[ "$output" == *'Orca runtime: UNREACHABLE'* ]]
-  [ "$status" -eq 3 ] || { echo "$output"; return 1; }
-}
-
-@test "--check --role server before --apply reports the missing unit" {
-  ready
-  run_setup --check --role server
-  [[ "$output" == *'Orca serve unit: MISSING (run --apply --role server)'* ]]
-  [[ "$output" == *'Linger: OFF'* ]]
-  [[ "$output" == *'Orca runtime: UNREACHABLE'* ]]
-  [ "$status" -eq 3 ]
-  no_calls
-}

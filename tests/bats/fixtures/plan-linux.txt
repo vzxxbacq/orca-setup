@@ -61,7 +61,7 @@ PATH (--apply):
   add      PATH block in ~/.profile    puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
   add      PATH block in ~/.zshrc      puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
 Pairing role check (--apply): after the baseline install, before any Orca step
-Orca server unit: only with --role server --pairing-address <ip-or-host> (README section 3.3.2)
+Orca server: --role server --pairing-address <ip-or-host> runs it in Docker instead (README section 6.7)
 Orca (--apply):
   skills and settings follow once Orca is installed and running
 Optional modules (add to --apply):

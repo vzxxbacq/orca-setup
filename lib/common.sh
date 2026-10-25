@@ -24,6 +24,9 @@ step() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# shq <text>: the text as one single-quoted word for a POSIX shell.
+shq() { local q="'\\''"; printf "'%s'" "${1//\'/$q}"; }
+
 # json_string <text>: the text as a JSON string literal; control characters become "?".
 json_string() {
   local text=${1//\\/\\\\}

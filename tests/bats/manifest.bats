@@ -28,7 +28,7 @@ use_copy() {
 
 @test "groups are baseline or a known optional module" {
   run bash -c "cat '$REPO_ROOT/manifest/baseline.tsv' '$REPO_ROOT/manifest/agents.tsv' | awk -F'\t' '!/^[[:space:]]*(#|\$)/ { print \$3 }' | sort -u"
-  [ "$output" = "$(printf '%s\n' agent-gemini android apple baseline containers media)" ]
+  [ "$output" = "$(printf '%s\n' agent-gemini android apple baseline containers image media)" ]
 }
 
 @test "agent packages match README section 3.2" {
@@ -163,4 +163,22 @@ use_copy() {
 @test "Debian install order: apt, repositories, installers, npm, then uv-managed tools" {
   . "$REPO_ROOT/lib/pkg-debian.sh"
   [ "$(manifest_select baseline.tsv debian baseline | debian_order | cut -f1 | paste -sd ' ' -)" = 'git git-lfs ripgrep jq tmux cmake pkg-config build-essential curl unzip ca-certificates gnupg libgbm libasound gh node uv pnpm python ruff orca' ]
+}
+
+@test "server manifests: mounts are relative directories plus {workdir}; host rows exist; limits ship empty" {
+  run awk -F'\t' '!/^[[:space:]]*(#|$)/ && (NF != 2 || $1 ~ /^\// || $1 ~ /\.\./ || $2 == "") { print }' "$REPO_ROOT/manifest/server-mounts.tsv"
+  [ -z "$output" ]
+  [ "$(manifest_rows server-mounts.tsv | cut -f1 | head -n 1)" = '{workdir}' ]
+  manifest_rows server-mounts.tsv | cut -f1 | grep -qx .orca
+  manifest_rows server-mounts.tsv | cut -f1 | grep -qx .claude
+  # No single file is mounted: Claude's .claude.json moves into ~/.claude (CLAUDE_CONFIG_DIR).
+  ! manifest_rows server-mounts.tsv | cut -f1 | grep -q '\.json$'
+  local name
+  for name in $(manifest_rows server-host.tsv | cut -f1); do
+    manifest_select baseline.tsv debian baseline | cut -f1 | grep -qx "$name"
+  done
+  [ -z "$(awk '!/^[[:space:]]*(#|$)/' "$REPO_ROOT/manifest/server-limits.env")" ]
+  # The image rows are Linux-only.
+  [ "$(manifest_select baseline.tsv debian image | cut -f1 | paste -sd ' ' -)" = 'xvfb nss-extrausers' ]
+  [ -z "$(manifest_select baseline.tsv macos image)" ]
 }

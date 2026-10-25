@@ -10,7 +10,11 @@ cp -R manifest/local.example manifest/local
 - `baseline.tsv`, `agents.tsv`, `orca-skills.tsv`: same columns as the files in `manifest/`. A row whose
   first column matches a shipped row replaces it in place; any other row is appended.
 - `orca-settings.json`: deep-merged over `manifest/orca-settings.json` (objects merge, arrays and values replace).
-- `orca-serve.env`: terminal limits for the Orca server unit on Linux (`--role server`); a key here replaces the
-  same key in `manifest/orca-serve.env`. Only the keys listed there are accepted.
+- `server-mounts.tsv` (not in this example): more directories to mount into the Linux server container, same columns
+  as `manifest/server-mounts.tsv`.
+- `server-limits.env`: container limits for the Linux server (`--role server`); a key here replaces the same key in
+  `manifest/server-limits.env`. Only the keys listed there are accepted.
+- `Dockerfile.example`: rename it to `Dockerfile` to build organization-specific tools on top of the Linux server's
+  locked image; setup.sh then runs the result instead (README section 3.3.2). Without it nothing is built.
 
 Everything here is a placeholder. Never put credentials in the overlay: authentication stays interactive.

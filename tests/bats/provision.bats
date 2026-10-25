@@ -127,7 +127,9 @@ case "$1 $2" in
   "terminal send")
     text=$(flag text "$@")
     printf "builder@device:~$ %s\n" "$text" >>"$R/term-out"
-    (cd "$(cat "$R/term-cwd")" && "'"$REAL_BASH"'" -c "$text") >>"$R/term-out" 2>&1 </dev/null
+    # A Linux server in Docker: the terminal runs inside its orca-server container.
+    if [ -e "$R/docker-server" ]; then form=orca-server; else form=; fi
+    (cd "$(cat "$R/term-cwd")" && ORCA_SETUP_CONTAINER=$form "'"$REAL_BASH"'" -c "$text") >>"$R/term-out" 2>&1 </dev/null
     echo "{\"ok\":true,\"result\":{}}" ;;
   "terminal read")
     cursor=$(flag cursor "$@") || cursor=0
@@ -344,4 +346,31 @@ changed_device() { grep -qE '^orca (project setup-clone|project setup-existing-f
   provision --environment lab --check
   [ "$status" -eq 100 ]
   [[ "$output" == *'did not print a --check --json report (exit status 4)'* ]]
+}
+
+@test "a Linux server in Docker: --plan and --check run in its container, --apply is refused before setup.sh" {
+  existing_checkout
+  touch "$R/docker-server"
+  provision --environment lab --pairing-address 203.0.113.10
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Device form: a Linux server in Docker; its Orca terminals run inside the orca-server container'* ]]
+  # The address belongs to the host's compose.yaml, so the plan inside the container does not get it.
+  [ "$(cat "$R/setup-calls")" = 'setup.sh --plan --role server' ]
+  provision --environment lab --check
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'Docker server: Docker, the image, the container and its mounts are checked on the host'* ]]
+  : >"$R/setup-calls"
+  provision --environment lab --apply --pairing-address 203.0.113.10
+  [ "$status" -eq 100 ]
+  [[ "$output" == *'REFUSED: lab is a Linux server in Docker'* ]]
+  [[ "$output" == *'./setup.sh --apply --role server --pairing-address <address>'* ]]
+  [ ! -s "$R/setup-calls" ]
+}
+
+@test "a Linux server in Docker without a checkout: --apply makes the checkout, then refuses before setup.sh" {
+  touch "$R/docker-server"
+  provision --environment lab --apply --destination "$SB/device"
+  [ "$status" -eq 100 ]
+  [[ "$output" == *"still work with the checkout $SB/device/orca-setup it just made"* ]]
+  [ ! -e "$R/setup-calls" ]
 }

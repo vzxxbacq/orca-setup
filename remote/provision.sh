@@ -5,6 +5,10 @@
 # there is reused), and setup.sh runs in an Orca terminal on the device whose output is streamed back here.
 # Read-only by default: without --apply it changes nothing on the device except opening one terminal there, and runs
 # only `./setup.sh --plan`. It never handles passwords, pairing codes or other credentials, and never runs --auth-*.
+# A Linux server in Docker (README section 6.7) is recognised from its terminal: Orca's terminals there run inside the
+# orca-server container, whose image sets ORCA_SETUP_CONTAINER=orca-server and writes /etc/orca-server-image. That
+# container has no sudo and no Docker, so for it --plan and --check run there and --apply is refused before setup.sh
+# runs, with a pointer to the host install over SSH.
 set -euo pipefail
 
 ORCA_SETUP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
@@ -12,8 +16,8 @@ ORCA_SETUP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ORCA_SETUP_ROOT/lib/common.sh"
 # shellcheck source=lib/detect.sh
 . "$ORCA_SETUP_ROOT/lib/detect.sh"
-# shellcheck source=lib/orca-serve.sh
-. "$ORCA_SETUP_ROOT/lib/orca-serve.sh"
+# shellcheck source=lib/orca-server.sh
+. "$ORCA_SETUP_ROOT/lib/orca-server.sh"
 
 REPO_URL=https://github.com/vzxxbacq/orca-setup
 PROJECT_ID=github:vzxxbacq/orca-setup
@@ -58,9 +62,6 @@ EOF
 refuse() { printf 'REFUSED: %s\n' "$*" >&2; exit "$EXIT_REFUSED"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit "$EXIT_REFUSED"; }
 usage_error() { printf '%s\n' "$*" >&2; usage >&2; exit 2; }
-
-# shq <text>: the text as one single-quoted word for a POSIX shell.
-shq() { local q="'\\''"; printf "'%s'" "${1//\'/$q}"; }
 
 # ---------------------------------------------------------------- arguments
 
@@ -314,6 +315,22 @@ remote_run() {
   done
 }
 
+# DEVICE_FORM: host (setup.sh runs on the device itself), or orca-server (a Linux server in Docker: the terminal runs
+# inside its orca-server container). The printed key is assembled by printf, so the echoed command line never
+# carries it.
+DEVICE_FORM=host
+probe_device_form() {
+  local form
+  remote_run quiet "f=host; if [ \"\${ORCA_SETUP_CONTAINER:-}\" = orca-server ] || [ -e /etc/orca-server-image ]; then f=orca-server; fi; printf 'orca-setup-%s %s\\n' form \"\$f\""
+  [ "$STEP_STATUS" = 0 ] || fail "cannot inspect the terminal on $environment."
+  form=$(sed -n -E 's/^orca-setup-form (host|orca-server)$/\1/p' "$WORK/step.log" | head -n 1)
+  DEVICE_FORM=${form:-host}
+  [ "$DEVICE_FORM" = orca-server ] || return 0
+  info "Device form: a Linux server in Docker; its Orca terminals run inside the $ORCA_SERVER_NAME container (README section 6.7)"
+  [ "$mode" != apply ] ||
+    refuse "$environment is a Linux server in Docker: its Orca terminals run inside the $ORCA_SERVER_NAME container, which has no sudo and no Docker and cannot change its host. Install or update it on the host over SSH: ./setup.sh --apply --role server --pairing-address <address> (README section 6.7). remote/provision.sh --plan and --check still work$(if [ "$CLONED" = yes ]; then printf ' with the checkout %s it just made' "$CHECKOUT"; fi)."
+}
+
 # git_value <key>: a value the checkout verification printed.
 git_value() { sed -n "s/^orca-setup-git $1 //p" "$WORK/step.log" | head -n 1; }
 
@@ -370,7 +387,9 @@ verify_checkout() {
 setup_line() {
   local line name
   line="cd $(shq "$CHECKOUT") && ./setup.sh $1 --role server"
-  [ "${2:-}" != --with-address ] || [ -z "$pairing_address" ] || line="$line --pairing-address $pairing_address"
+  # Inside the orca-server container the address belongs to the host's compose.yaml.
+  [ "${2:-}" != --with-address ] || [ -z "$pairing_address" ] || [ "$DEVICE_FORM" = orca-server ] ||
+    line="$line --pairing-address $pairing_address"
   for name in $modules; do line="$line $name"; done
   [ -z "$task_source" ] || line="$line --task-source $task_source"
   printf '%s\n' "$line"
@@ -405,6 +424,8 @@ check_and_exit() {
   done
   [ -n "$pending" ] || info '  none pending'
   info '  ./setup.sh --auth-agy   (not detected by --check; run it if agy is not signed in yet)'
+  [ "$DEVICE_FORM" != orca-server ] ||
+    info "Docker server: Docker, the image, the container and its mounts are checked on the host: ./setup.sh --check there (over SSH)."
   info "The terminal stays open on $environment; close it with: $CLI_NAME terminal close --environment $environment --terminal $TERMINAL"
   [ "$missing" -le 99 ] || missing=99
   exit "$missing"
@@ -416,6 +437,7 @@ info "orca-setup remote provisioning ($mode)$(if [ "$mode" = plan ]; then printf
 preflight
 make_checkout
 open_terminal
+probe_device_form
 [ "$CLONED" = yes ] || verify_checkout
 
 case "$mode" in
