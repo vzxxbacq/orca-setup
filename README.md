@@ -2,7 +2,8 @@
 
 > Status: **P0–P5 implemented**: macOS parity, the Linux baseline, Orca on Linux, auth and optional modules on Linux,
 > remote provisioning from a client, and (P5, §6.7) the Linux server in a Docker container with its work, Orca data
-> and agent login directories mounted from the host; the native Linux server (systemd user unit) is gone. Real-device
+> and agent login directories mounted from the host; the native Linux server (systemd user unit) is gone. Since P5.1
+> the container's Orca port is published on one private host address only (`--publish-address`, §3.3.2). Real-device
 > acceptance is **pending**; the checklist in §6.6 runs all of it in one session.
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
@@ -18,6 +19,7 @@
 ./setup.sh --check                  # read-only readiness report; exit code = number of missing items
 ./setup.sh --apply --role server    # install what is missing, Orca skills and defaults (role is required)
 ./setup.sh --apply --role server --pairing-address <ip-or-host>   # Linux server: Docker Engine + the orca-server container
+./setup.sh --apply --role server --pairing-address <host-name> --publish-address <private-ipv4>   # port 6768 only there
 ./setup.sh --apply --role server --pairing-address <ip-or-host> --workdir /srv/orca   # projects/ and workspaces/ there
 ./setup.sh --apply --role server --pairing-address <ip-or-host> --upgrade-image       # Linux server: newest image
 ./setup.sh --apply --role server --power --media      # plus optional modules
@@ -53,8 +55,10 @@ remote/provision.sh --environment <name> --check               # exit code = the
   `ghcr.io/vzxxbacq/orca-server` (§3.3.2, §6.7). The optional modules have Linux versions (§3.5), and every
   `--auth-*` works headless (§3.4); on a server the logins run inside the container.
 - `--pairing-address` is required for `--apply --role server` on Linux and refused anywhere else (macOS picks the
-  address in Orca's Settings; a client never advertises one). `--workdir` and `--upgrade-image` are for Linux servers
-  only.
+  address in Orca's Settings; a client never advertises one). `--publish-address`, refused in the same places, is the
+  server's own private IPv4 address that Docker publishes port 6768 on, and no other host address answers on that
+  port; it defaults to an IPv4 `--pairing-address`, a host name needs it, and a re-run keeps the last one (§3.3.2).
+  `--workdir` and `--upgrade-image` are for Linux servers only.
 
 ---
 
@@ -79,7 +83,7 @@ remote/provision.sh --environment <name> --check               # exit code = the
 - No project data migration; only extension points are reserved.
 - No organization-specific integrations (internal Git hosts, VPNs, mirrors) in this repository; those go in a local, untracked overlay (§3.7).
 - No Linux arm64.
-- No network setup: the private route between client and server (Tailscale, LAN, WireGuard) is the user's job; `setup.sh` only takes the address to advertise.
+- No network setup: the private route between client and server (Tailscale, LAN, WireGuard) is the user's job; `setup.sh` only takes the address to advertise and, on a Linux server, the private host address to publish Orca's port on.
 - No Fedora/RHEL for now (`pkg-fedora.sh` stays a placeholder).
 - No Windows / WSL for now (revisit later).
 
@@ -168,7 +172,7 @@ headless sign-in is described in §3.4.
 |---|---|---|
 | Orca itself | `/Applications/Orca.app` (desktop; Homebrew cask `stablyai/orca/orca` when missing) | **headless runtime**: the official `.deb` from the latest stable GitHub release (`orca-ide_<version>_amd64.deb`), checked against GitHub's sha256 digest, then installed with `apt-get install <file>`; see §3.3.1. A client installs it on the host (`sudo`); a server has it in the Orca server image (§3.3.2) |
 | CLI name | `orca` | `orca` inside the Orca terminal; **outside the Orca terminal you must use `orca-ide`** (bare `orca` is the GNOME screen reader). Scripts resolve it uniformly via `ORCA_CLI_COMMAND` / probing |
-| Always-on | desktop app login item | `--role server`: the **`orca-server` container** (Docker Compose, `restart: unless-stopped`, so Docker brings it back after a reboot) running `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>` (§3.3.2); `--role client`: none |
+| Always-on | desktop app login item | `--role server`: the **`orca-server` container** (Docker Compose, `restart: unless-stopped`, so Docker brings it back after a reboot) running `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`, with port 6768 published on the private publish address only (§3.3.2); `--role client`: none |
 | Pairing | Settings → Remote Orca Servers → New Link | the user stops the container and runs `orca-ide serve` in an interactive `docker compose run --rm` (§3.3.2); `setup.sh` never creates or prints a pairing link |
 | Accounts | `orca account add --agent claude\|codex` | same, run on the server: inside the container, which `./setup.sh --auth-codex` on the host enters with `docker exec` (a remote client cannot add accounts) |
 | Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex`, listed in `manifest/orca-skills.tsv`; a skill is skipped when the local plan of `orca skills install ... --dry-run --json` would write nothing for it (an older copy counts as installed: no upgrades), with `orca skills installed` (which needs a running runtime) as the fallback for builds whose dry-run prints no plan | same, minus `orca-emulator` (the iOS simulator is macOS-only). `computer-use` is installed: upstream ships a Linux helper (AT-SPI, `native/computer-use-linux`) and the `.deb` depends on `python3-gi`, `at-spi2-core`, `xdotool` and `xvfb`, but it drives apps in a graphical session, so a headless server has nothing to drive until an app runs on a display |
@@ -206,14 +210,19 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
   the log. Upstream's own `orca serve service install` writes a systemd unit; P5 replaced orca-setup's unit of that
   kind with the container (§6.7).
 - **Network**: bind the pairing address to a private route (Tailscale `100.x`, LAN, WireGuard); never `127.0.0.1` and
-  never a port forwarded to the public internet.
+  never a port forwarded to the public internet. `orca serve` itself listens on every interface: the CLI starts orcad
+  with `--bind 0.0.0.0` (`orcadServeArgs`, `src/shared/orcad-serve-argv.ts`), the Electron serve path sets
+  `exposeNetworkByDefault`, and `--pairing-address` only changes the address it advertises ("changes only the
+  client-advertised address", `src/cli/specs/serve.ts`). So a Linux server limits the port by Docker's port
+  publishing instead (§3.3.2).
 - **Credentials**: integration credentials (Linear etc.) are sealed with a per-machine key in `~/.orca`; GitHub tokens
   stay in `gh`. Nothing for this repository to handle.
 - **Single host mode**: never run `orca-ide serve` next to a desktop app that already shares the same machine.
 
 #### 3.3.2 Linux server (Docker) and client roles
 
-`--apply --role server --pairing-address <address> [--workdir <dir>] [--upgrade-image]` on Linux (design: §6.7):
+`--apply --role server --pairing-address <address> [--publish-address <ipv4>] [--workdir <dir>] [--upgrade-image]` on
+Linux (design: §6.7, §6.7's P5.1 note):
 
 1. **Docker Engine.** A host without Docker gets Docker Engine from Docker's apt repository through the verified path
    of `--containers` (§3.5): the baseline rows `manifest/server-host.tsv` names (`curl`, `ca-certificates`, `gnupg`),
@@ -250,9 +259,13 @@ Source: `docs/site/content/docs/install.mdx` and `remote-servers.mdx` in [stably
 6. **The container.** `docker/compose.yaml` is rendered into `~/.config/orca-setup/docker/compose.yaml` (written when it
    differs), and `docker compose up --detach` starts the container unless it already runs from that file (it carries
    a checksum of the file as its `org.orca-setup.config` label):
-   - `network_mode: host` (port 6768 and the pairing address need no mapping), `restart: unless-stopped` (Docker
-     brings it back after a reboot), `init: true`, `pull_policy: never`, and the command
-     `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`;
+   - the compose project's own bridge network (`orca-server_default`) and exactly one published port,
+     `"<publish address>:6768:6768/tcp"`: Docker binds port 6768 on that host address only and forwards it to the
+     container, where `orca-ide serve` listens on every interface (§3.3.1); the host's other addresses, a public one
+     included, do not answer on it. `hostname:` is the host's name, as on the host network before P5.1: Orca shows it
+     to clients as the server's name and records it in its profile locks;
+   - `restart: unless-stopped` (Docker brings it back after a reboot), `init: true`, `pull_policy: never`, and the
+     command `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`;
    - `user: <uid>:<gid>` of the user and `HOME` set to the user's home path; a read-only root filesystem with a tmpfs
      `/tmp`, every capability dropped and `no-new-privileges`; no `sudo` and no Docker in the image;
    - the container's home is `~/.local/share/orca-setup/home`, so a file written outside the mounts either persists
@@ -274,10 +287,35 @@ it on a real device. A systemd user unit `orca-serve.service` that an earlier or
 it) would share `~/.orca` and port 6768 with the container, so `--apply` stops until it is removed and `--plan` shows
 how (`systemctl --user disable --now orca-serve.service`, remove the file, `systemctl --user daemon-reload`).
 
+**The publish address.** `--publish-address <ipv4>` is the host's own private IPv4 address that Docker publishes port
+6768 on; nothing else is published. Without the flag an IPv4 `--pairing-address` is used. A host name needs the flag,
+because clients may resolve it to an address the server itself never sees (a VPN mapping, for example), and so does an
+IPv4 pairing address that no interface of the host has. The address must be a plain dotted IPv4 address that
+`ip -4 -o addr show` lists for one of the host's interfaces; loopback, wildcard, broadcast and multicast addresses are
+refused (the CI override above also allows `127.0.0.2`, which `lo` answers). `compose.yaml` records it next to the
+pairing address (`x-orca-setup`, `publish-address`): a re-run without the flag keeps it, except that a default (the
+recorded pairing address) follows a new `--pairing-address`, and a different address changes `compose.yaml` and so
+re-creates the container. `--plan` shows the endpoint (`publish  <address>:6768 (...); port 6768 is not reachable on
+this host's other addresses`). `--check` reads the running container's actual bindings (`docker container inspect`)
+and reports `Published endpoint: <address>:6768`; anything else counts as `WRONG (...)`: another or a wildcard
+address, more ports, or a container from before P5.1 on the host network. The address must exist when Docker starts
+the container: after a reboot that happens as soon as the daemon runs, so an address on an interface that comes up
+later (a VPN interface such as Tailscale's or WireGuard's) needs `docker.service` ordered after it (a systemd drop-in
+with `After=` and `Wants=` that interface's unit); otherwise Docker cannot bind the port, the container stays stopped
+(`--check`: `INACTIVE`), and `docker compose start` in `~/.config/orca-setup/docker` (or `--apply`) starts it later.
+
+**Docker's networking on the host.** Port publishing uses Docker Engine's bridge networking, which turns on IPv4
+forwarding (`net.ipv4.ip_forward=1`) and adds Docker's own iptables chains and NAT rules; when Docker has to turn
+forwarding on itself, it also sets the policy of the iptables `FORWARD` chain to `DROP`, which stops other forwarded
+traffic on the host (a router, a VPN subnet router or exit node) unless that traffic has rules of its own. Its
+published-port rules act before the `INPUT` rules of firewall front ends such as `ufw`, so the publish address, not
+the host firewall, decides which address answers on port 6768. `--plan` says so; `setup.sh` changes no daemon
+setting.
+
 **Inside the container** `setup.sh` knows where it runs (the image sets `ORCA_SETUP_CONTAINER=orca-server`): `--plan`
 and `--check` cover the image's tools, Orca and the logins and leave Docker, the image and the mounts to the host;
-`--pairing-address`, `--workdir` and `--upgrade-image` are refused there and the host modules (`--power`,
-`--containers`, `--gpu`) skipped.
+`--pairing-address`, `--publish-address`, `--workdir` and `--upgrade-image` are refused there and the host modules
+(`--power`, `--containers`, `--gpu`) skipped.
 
 **Orca's workspace directory.** Upstream keeps it as the `workspaceDir` global setting in the host's own profile state
 under `~/.orca` (SQLite; `orca-data.json` is the older form), and a fresh profile gets
@@ -311,15 +349,19 @@ kept):
 ```sh
 cd ~/.config/orca-setup/docker
 docker compose stop                     # one Orca per profile: a second serve would refuse to start
-docker compose run --rm orca-server orca-ide serve --port 6768 --pairing-address <address>
+docker compose run --rm --service-ports orca-server orca-ide serve --port 6768 --pairing-address <address>
                                         # prints "Pairing URL: orca://pair?..."; copy it, then Ctrl-C
 docker compose start
 clear                                   # drop the URL from the terminal
 ```
 
 This is upstream's documented way for a service-managed server ("pair clients … with `orca serve` in a terminal while
-the service is stopped"). `docker compose run --rm` uses the same image, user, home and mounts, so the offer is stored
-in the device registry in `~/.orca` and the restarted container accepts it; the run container logs to `json-file`
+the service is stopped"). `<address>` is the pairing address (the one in `compose.yaml`'s `command`). `docker compose
+run --rm` uses the same image, user, home, host name and mounts, so the offer is stored in the device registry in
+`~/.orca` and the restarted container accepts it. `--service-ports` publishes the service's port exactly as
+`compose.yaml` does, on `<publish address>:6768` only, so clients can also reach this serve while it runs; without it
+the run container would publish nothing. CI runs this command against the rendered file (with `--no-pairing` added,
+so no offer exists in CI) and checks that only the publish address answers; the run container logs to `json-file`
 (set in `compose.yaml`, not the daemon's default, which could be journald or a remote driver), so removing it takes
 its log with it. Stopping the container ends the terminal sessions running in it. On the client, paste it in
 **Settings → Remote Orca Servers → Add Server**, or read it without echo instead of putting it on a command line (the
@@ -421,7 +463,9 @@ Linux notes:
     (<repository>@sha256:...)`, or `MISSING` without `image.lock`), `Newest image` (whether the registry's `main`
     differs from the lock, through `docker buildx imagetools inspect`; reported, never counted, never pulled), the
     `Orca server container` (`running`, else `INACTIVE (<status>)`, `MISSING`, or `STALE` when it was not created from
-    the current `compose.yaml`), and every mounted directory (`Mount <path>`: `ok`, `MISSING` or `WRONG OWNER`), plus
+    the current `compose.yaml`), for a running container its `Published endpoint` (`<publish address>:6768 (not
+    reachable on this host's other addresses)`, else `WRONG (...)` with what it publishes instead, §3.3.2), and every
+    mounted directory (`Mount <path>`: `ok`, `MISSING` or `WRONG OWNER`), plus
     the host modules. It then runs `/opt/orca-setup/setup.sh --check [--json]` inside the container with those items
     (`docker exec`, environment `ORCA_SETUP_HOST_ITEMS`, `ORCA_SETUP_HOST_DEVICE`, `ORCA_SETUP_HOST_SERVER`), which
     prints them first and adds the image's tools, the logins and Orca's items (runtime, skills, accounts, settings,
@@ -439,17 +483,19 @@ Linux notes:
   line as `{name, state, counted}`), `auth` (`gh`, `codex`, `claude`, `linear` with `complete`, `pending`,
   `not-selected` or `not-connected`, and whether it is counted), `versions` (including `orca` and `orca-latest`) and
   `audit` (the `READINESS_JSON` object). A Linux server adds `server`: `{"form": "docker", "image", "newest",
-  "container", "workdir"}` from the host (or `"host": "not-checked"` when it ran inside the container alone), and its
-  `device` is the host's. P5 only added keys; the schema stays `orca-setup-check/1`. It holds names, states, counts
-  and versions only, never credential values, and exits with the same code. `remote/provision.sh` reads it instead of
-  parsing the text (§5.2).
+  "container", "endpoint", "workdir"}` from the host (`endpoint`: what the running container publishes, such as
+  `192.0.2.10:6768`, `host` for the host network, or `none`), or `"host": "not-checked"` when it ran inside the
+  container alone, and its `device` is the host's. P5 and P5.1 only added keys; the schema stays
+  `orca-setup-check/1`. It holds names, states, counts and versions only, never credential values, and exits with the
+  same code. `remote/provision.sh` reads it instead of parsing the text (§5.2).
 - Orca's version: `VERSION orca <installed> (latest release <version>)`, from `<orca> --version` and the latest stable
   release of the repository the Linux `.deb` comes from (`manifest/baseline.tsv`, through the GitHub API; `unknown`
   when it cannot be read). Reported only: `setup.sh` never upgrades Orca (§3.3.1).
 - Exit code = number of missing items, usable directly as an acceptance condition. Counted: `MISSING` tools and
   agents from the manifest (and from the modules given), a missing Orca CLI, an unreachable Orca runtime (not on a Linux client), missing Orca
   skills, on a Linux server a missing or unreachable Docker, a missing docker group, image lock or mounted directory
-  (or one owned by someone else) and a missing, stopped or stale container, a `PENDING` GitHub login or Codex
+  (or one owned by someone else), a missing, stopped or stale container and one that publishes anything but port 6768
+  on the publish address, a `PENDING` GitHub login or Codex
   account, Linear when `--task-source linear` is given, and a pairing role conflict (dual role, or the
   other role than `--role`) or an unknown role (unreadable pairing stores), and a missing NVIDIA driver next to an
   NVIDIA GPU (`--gpu`). Reported but not counted: versions (including Orca's installed and latest version), the
@@ -536,7 +582,8 @@ orca-setup/
 [new device, role: server]                    [control machine, role: client]
 
 0. Install Orca (macOS desktop / Linux in Docker)
-   Linux: ./setup.sh --apply --role server --pairing-address <address>  (Docker Engine, the orca-server container)
+   Linux: ./setup.sh --apply --role server --pairing-address <address> [--publish-address <ipv4>]
+          (Docker Engine, the orca-server container; port 6768 published on the private address only)
 
 1. Generate a pairing code
    (desktop Settings, or on Linux        ──►   orca environment add --name <device> --pairing-code <code>
@@ -605,9 +652,9 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 ### 5.2 Remote provisioning (`remote/provision.sh`)
 
 `remote/provision.sh --environment <name> [--plan | --apply | --check] [--role server] [--pairing-address <address>]
-[--task-source linear] [modules] [--destination <dir> | --path <dir>] [--fast-forward]` runs on the control machine
-and wraps steps 2–5 for one paired device. Everything goes through the public Orca CLI (resolved like setup.sh's,
-`lib/detect.sh`); the device needs nothing but its paired Orca server.
+[--publish-address <ipv4>] [--task-source linear] [modules] [--destination <dir> | --path <dir>] [--fast-forward]`
+runs on the control machine and wraps steps 2–5 for one paired device. Everything goes through the public Orca CLI
+(resolved like setup.sh's, `lib/detect.sh`); the device needs nothing but its paired Orca server.
 
 1. **Preflight** (read-only). This machine must be a client (`orca/role.sh --expect client`: saved environments, no
    runtime clients seen recently); on a server, a dual role, a host without saved environments or an unknown role
@@ -638,14 +685,16 @@ and wraps steps 2–5 for one paired device. Everything goes through the public 
    fast-forwarded only with `--fast-forward` (`git merge --ff-only @{u}`; refused with local changes or local
    commits). `--apply` refuses to run a checkout that is behind without it; `--plan` and `--check` warn.
 5. **setup.sh** (steps 3 and 5). `--plan` (the default) runs only `./setup.sh --plan --role server [...]`. `--apply`
-   runs `./setup.sh --plan`, then `./setup.sh --apply --role server [--pairing-address ...] [modules]
-   [--task-source ...]`, then `./setup.sh --check --json --role server [modules] [--task-source ...]`; `--check`
-   runs only the last one. The device's report is read from the JSON (§3.6), never from the text.
-   **On a Linux server in Docker** `--plan` and `--check` run there as well (the plan without `--pairing-address`,
-   which belongs to the host's `compose.yaml`; the check covers the container's side and the summary points to
-   `./setup.sh --check` on the host), but `--apply` is refused (exit 100) before setup.sh runs: right after the
-   terminal opens on an existing checkout, after making the checkout otherwise. The container has no `sudo` and no
-   Docker and cannot change its host, so the server is installed and updated on the host over SSH
+   runs `./setup.sh --plan`, then `./setup.sh --apply --role server [--pairing-address ...] [--publish-address ...]
+   [modules] [--task-source ...]`, then `./setup.sh --check --json --role server [modules] [--task-source ...]`;
+   `--check` runs only the last one. Both addresses go to `--plan` and `--apply`; provision.sh checks only the form of
+   `--publish-address`, and the device checks that one of its interfaces has it. The device's report is read from the
+   JSON (§3.6), never from the text.
+   **On a Linux server in Docker** `--plan` and `--check` run there as well (the plan without `--pairing-address` and
+   `--publish-address`, which belong to the host's `compose.yaml`; the check covers the container's side and the
+   summary points to `./setup.sh --check` on the host), but `--apply` is refused (exit 100) before setup.sh runs:
+   right after the terminal opens on an existing checkout, after making the checkout otherwise. The container has no
+   `sudo` and no Docker and cannot change its host, so the server is installed and updated on the host over SSH
    (`./setup.sh --apply --role server --pairing-address <address>`).
 6. **sudo** (Linux apt steps and modules). provision.sh never reads, sends or stores a password. When the device's
    output shows a sudo prompt it prints `ACTION: sudo on <name> is asking for a password. Answer it in the Orca
@@ -733,7 +782,7 @@ code is the device's missing count for `--check` and `--apply` (capped at 99; 0 
   `project setup-clone` accepts the project id `github:vzxxbacq/orca-setup` for a fresh device, the `terminal read`
   cursor semantics for a partial last line (a sudo prompt has no newline), and the terminal `status` values.
 
-### 6.6 Pending real-device acceptance (P2–P5)
+### 6.6 Pending real-device acceptance (P2–P5.1)
 
 Run in one session with a laptop as the control machine (client) and a real Linux x86_64 machine (Ubuntu 24.04 or
 Debian 12) as the new server; nothing here is covered by CI, and no pairing secret ever leaves the two machines.
@@ -742,15 +791,24 @@ Debian 12) as the new server; nothing here is covered by CI, and no pairing secr
    in GitHub's package settings, then check it on the laptop:
    `gh attestation verify oci://ghcr.io/vzxxbacq/orca-server:main --repo vzxxbacq/orca-setup`.
 1. **P5, host install** (an SSH session on the server): `git clone https://github.com/vzxxbacq/orca-setup
-   ~/orca/projects/orca-setup`, then `./setup.sh --plan --role server --pairing-address <private address>` and the
-   same with `--apply`. Expect Docker Engine from Docker's repository (or an existing Docker kept as it is), the
-   `sudo usermod` step and the `sg docker` note, the image pulled and its digest locked, the container running. A
-   second `--apply` prints only `PRESENT` lines; `./setup.sh --check` counts only the GitHub login and the Orca Codex
-   account. After `sudo reboot` and a new login the container is back (`docker ps`), `id` lists `docker`, and
-   `--check` is unchanged.
-2. **P2, pairing**: create a link with the container stopped (§3.3.2), save it on the laptop with
-   `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on the server, and check
-   `orca status --environment <server>` on the laptop. Confirm `docker logs orca-server` holds no pairing URL.
+   ~/orca/projects/orca-setup`, then `./setup.sh --plan --role server --pairing-address <private address>` (plus
+   `--publish-address <the server's private IPv4 address>` when the pairing address is a host name or one the server
+   does not have) and the same with `--apply`. Expect `publish  <private address>:6768`, Docker Engine from Docker's
+   repository (or an existing Docker kept as it is), the `sudo usermod` step and the `sg docker` note, the image pulled
+   and its digest locked, the container running. A second `--apply` prints only `PRESENT` lines; `./setup.sh --check`
+   counts only the GitHub login and the Orca Codex account and reports `Published endpoint: <private
+   address>:6768`. After `sudo reboot` and a new login the container is back (`docker ps`; for an address on a VPN
+   interface see §3.3.2), `id` lists `docker`, and `--check` is unchanged.
+
+   **P5.1, exposure**: `docker port orca-server` lists only `6768/tcp -> <private address>:6768`. From the laptop,
+   `nc -vz <private address> 6768` connects and `nc -vz <public address> 6768` does not (on a VPS with an accepting
+   firewall, the public address is the one to try); on the server, `sysctl net.ipv4.ip_forward` and
+   `sudo iptables -S FORWARD | head -n 1` show what Docker changed (§3.3.2), and anything else that forwards traffic
+   on the host still works.
+2. **P2, pairing**: create a link with the container stopped (§3.3.2, `docker compose run --rm --service-ports`), save
+   it on the laptop with `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on
+   the server, and check `orca status --environment <server>` on the laptop. Confirm `docker logs orca-server` holds
+   no pairing URL.
 3. **P4, provisioning**: on the laptop, `remote/provision.sh --environment <server>` (plan only; it recognises the
    Docker server), `remote/provision.sh --environment <server> --apply --path ~/orca/projects/orca-setup` (registers
    the checkout, then refuses with the pointer to the host), and `remote/provision.sh --environment <server> --check`
@@ -789,9 +847,10 @@ below is as decided; how it was built, and where it differs, follows at the end 
 
 **Container.**
 
-- `docker compose`, `network_mode: host` (port 6768 and the pairing address need no mapping),
-  `restart: unless-stopped` (Docker brings it back after a reboot), `init: true`; the command is
-  `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`.
+- `docker compose`, `network_mode: host` (port 6768 and the pairing address need no mapping; **superseded by P5.1**:
+  the compose project's bridge network with port 6768 published on the private publish address only, see the P5.1
+  note at the end of this section), `restart: unless-stopped` (Docker brings it back after a reboot), `init: true`;
+  the command is `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`.
 - runs as the host user's UID:GID with `HOME` set to the host user's home path; no `sudo` and no Docker inside.
 - read-only root filesystem with a tmpfs `/tmp`; the rest of the container's `HOME` is a dedicated host directory
   (`~/.local/share/orca-setup/home`, `$XDG_DATA_HOME` honoured), so a write outside the mounts fails or persists
@@ -824,9 +883,10 @@ below is as decided; how it was built, and where it differs, follows at the end 
 
 **Pairing, logins, check.**
 
-- Pairing: `docker compose stop`, then an interactive `docker compose run --rm` of `orca-ide serve --port 6768
-  --pairing-address <address>` in an SSH terminal; copy the link, Ctrl-C, `docker compose start`, `clear`. The
-  removed run container takes its log with it; `setup.sh` still never creates, captures or prints a link.
+- Pairing: `docker compose stop`, then an interactive `docker compose run --rm` (since P5.1 with `--service-ports`) of
+  `orca-ide serve --port 6768 --pairing-address <address>` in an SSH terminal; copy the link, Ctrl-C,
+  `docker compose start`, `clear`. The removed run container takes its log with it; `setup.sh` still never creates,
+  captures or prints a link.
 - `./setup.sh --auth-*` on the host runs each login inside the container (`docker exec -it`); Orca skills and
   settings are applied the same way. agy has no Secret Service in the container, so its sign-in is expected not to
   persist; confirmed or refuted on real hardware (§9).
@@ -839,8 +899,9 @@ pointing to the host install over SSH.
 
 **CI.** The client container matrix stays. The runner VM job builds the image locally and runs
 `--apply --role server --pairing-address 127.0.0.2` with it twice (second run a no-op), checks the runtime through
-`docker exec`, that no output, container log or journal holds a pairing URL, that a file written in a mounted
-directory survives `docker compose down && up` owned by the runner user, and that writing outside the mounts fails.
+`docker exec`, that only `127.0.0.2:6768` is published and answers (P5.1; also for the pairing command), that no
+output, container log or journal holds a pairing URL, that a file written in a mounted directory survives
+`docker compose down && up` owned by the runner user, and that writing outside the mounts fails.
 A publish job runs only on pushes to `main`.
 
 **Implementation notes and deviations.**
@@ -890,6 +951,26 @@ A publish job runs only on pushes to `main`.
   `~/.config/orca-setup/docker/manifest-local` and mounted read-only at `/opt/orca-setup/manifest/local`, so local
   settings and skills apply inside the container. The service pins the `json-file` log driver so that the pairing
   run's log is removed with it whatever the daemon's default driver is.
+- *P5.1: the port on one private address (2026-10-26).* The first real server is a VPS with a public interface and an
+  accepting firewall, where the host network made port 6768 answer on every host address, the public one included:
+  upstream's `orca serve` listens on every interface and `--pairing-address` only changes the advertised address
+  (§3.3.1). Decided by the project owner: Docker port publishing, so the port is exposed only on the internal
+  address. `docker/compose.yaml` drops `network_mode: host`; the container runs on the compose project's default
+  bridge network, and the only published port is `"<publish address>:6768:6768/tcp"`. The new `--publish-address
+  <ipv4>` (Linux server hosts only, like `--pairing-address`) defaults to an IPv4 `--pairing-address` and is required
+  for a host name; it must be an IPv4 address of one of the host's interfaces (`ip -4 -o addr show`), not loopback,
+  wildcard, broadcast or multicast (CI's loopback override allows `127.0.0.2`). It is recorded in `compose.yaml`
+  (`x-orca-setup`): a re-run keeps it and a change re-creates the container. `--plan` shows the endpoint and Docker's
+  forwarding and iptables changes; `--check` reports the running container's bindings as `Published endpoint` and
+  counts anything else (`WRONG`); `--check --json` adds `server.endpoint`. The pairing command gained
+  `--service-ports`. `remote/provision.sh` forwards `--publish-address` like `--pairing-address` (never into the
+  container). Beyond the brief: **the container keeps the host's name** (`hostname:` in `compose.yaml`), because a
+  bridge-network container would otherwise be named after its id, which changes on every re-create, and Orca shows
+  `os.hostname()` to clients as the server's name and records it in its profile locks (`runtime-machine-name.ts`,
+  `orcad-instance-lock.ts`); and **a default publish address follows the pairing address**: a recorded address that
+  equals the recorded pairing address was the default, so a new `--pairing-address` replaces it instead of leaving
+  the port on an address clients no longer dial (an address given explicitly is kept). Other ports that processes in
+  the container open (a dev server in a worktree, for example) are no longer reachable on the host's addresses.
 
 ---
 
@@ -913,10 +994,16 @@ A publish job runs only on pushes to `main`.
     `ORCA_SETUP_IMAGE` names: `--apply --role server --pairing-address 127.0.0.2 --power --containers --gpu`
     (test-only override, §3.3.2) twice. The second run must run no step and leave the packages, apt sources,
     `compose.yaml`, `image.lock` and the container itself unchanged; the runner's preinstalled Docker (packages, apt
-    sources, group) must be used as it is and stay unchanged; the container must run on the host network with a
-    read-only root filesystem, `restart: unless-stopped` and an init, as the runner's UID:GID with `HOME` at the
-    runner's home path, without `sudo` or `docker`, and with every baseline tool, agent and image tool on its `PATH`;
-    `orca-ide status --json` inside it must report the runtime reachable; neither the setup output, the status reply
+    sources, group) must be used as it is and stay unchanged; the container must run on the compose project's bridge
+    network (`orca-server_default`) with the runner's host name, a read-only root filesystem, `restart:
+    unless-stopped` and an init, as the runner's UID:GID with `HOME` at the runner's home path, without `sudo` or
+    `docker`, and with every baseline tool, agent and image tool on its `PATH`; `orca-ide status --json` inside it
+    must report the runtime reachable; `docker port` must list only `127.0.0.2:6768` (the publish address, defaulting
+    to the pairing address), Orca must answer HTTP there from the host, and a TCP connection to port 6768 on the
+    runner's primary address (its default route's, `eth0`) and on `127.0.0.1` must fail, after the first run, after a
+    re-create, after the upgrade, and for the documented pairing command (`docker compose run --rm --service-ports`,
+    run with `--no-pairing` added so that no offer exists); `--check` must report `Published endpoint:
+    127.0.0.2:6768` and `--check --json` the same `endpoint`; neither the setup output, the status reply
     nor `docker logs` may contain a pairing URL; a file written in `~/orca/projects` (and one in the container's home)
     must survive `docker compose down && up` owned by the runner user, and writes to `/opt`, `/etc`, `/usr/local` and
     `/` must fail; the sleep targets must be masked; `--check` must count only the GitHub login and the Orca Codex
@@ -940,10 +1027,16 @@ A publish job runs only on pushes to `main`.
 - **Linux server in Docker** (`tests/bats/server-docker.bats`) runs against a fake Docker CLI and daemon, a fake
   registry and `sg`, whose `exec` and `run` run the in-container `setup.sh` and `role.sh` in the sandbox: the server
   `--plan` snapshot, Docker Engine's fresh install with the group and `sg`, an existing Docker used as it is, Podman
-  and broken Docker refused, the rendered `compose.yaml` (UID:GID, home, host network, read-only, tmpfs, mounts at the
-  same path, limits), `--workdir`, the image lock and `--upgrade-image`, the local Dockerfile, the role check before
+  and broken Docker refused, the rendered `compose.yaml` (UID:GID, home, no host network but exactly one published port
+  on the publish address, the host name, read-only, tmpfs, mounts at the same path, limits), the publish address
+  (the IPv4 pairing address by default, required for a host name, refused when malformed, loopback, wildcard,
+  broadcast, multicast or missing from a fake `ip`, the CI loopback override, refused on clients, macOS and inside the
+  container, recorded and kept by a re-run, a new one re-creating the container, a default following the pairing
+  address), the published endpoint in `--check` (counted on another or a wildcard address, with more ports or on
+  the host network), `--workdir`, the image lock and `--upgrade-image`, the local Dockerfile, the role check before
   the start, the logins through `docker exec`, the combined `--check` (text and JSON, with and without a running
-  container), and `setup.sh` inside the container; no output may carry the fake pairing URL.
+  container), and `setup.sh` inside the container; no output may carry the fake pairing URL. `provision.bats` also
+  covers forwarding `--publish-address` and refusing a malformed one.
 - **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`. The Linux
   jobs also pass `--gpu` (the runners have no NVIDIA GPU) and check that `--check --json` reports the same missing
   count as `--check`. Remote provisioning is not run end to end in CI (§6.5). On pushes to `main` only, a publish job
@@ -971,7 +1064,10 @@ A publish job runs only on pushes to `main`.
 | `--containers` or a Linux server replaces or upgrades a Docker or Podman someone installed another way | `--containers` is skipped when a conflicting package (`manifest/apt-conflicts.tsv`) or a foreign `docker`/`podman` exists; a server uses a working foreign Docker as it is and refuses Podman or a broken Docker; CI checks the runner's preinstalled Docker stays unchanged |
 | The docker group is root-equivalent | only added by the explicit `--containers` module, or by `--apply --role server`, which needs Docker; `--plan` and the README say so |
 | The Orca server image is tampered with, or changes under a running server | the base image is pinned by digest, its tools pass the same key and digest checks as on a client, the image is published only from `main` with a build provenance attestation (`gh attestation verify`), and a host runs the digest locked in `image.lock` until `--upgrade-image`. The image's agents are the latest releases at build time, as on a client |
-| A process in the server container reaches beyond its user | it runs as the user's UID:GID with every capability dropped, `no-new-privileges`, a read-only root filesystem, no `sudo` and no Docker socket; it still shares the host network and the mounted directories, which hold the user's logins |
+| A process in the server container reaches beyond its user | it runs as the user's UID:GID with every capability dropped, `no-new-privileges`, a read-only root filesystem, no `sudo` and no Docker socket, on its own bridge network (since P5.1); it still shares the mounted directories, which hold the user's logins |
+| Orca's port answers on a public address of the server (a VPS with a public interface and an accepting firewall) | upstream's `orca serve` listens on every interface and `--pairing-address` only changes the advertised address, so the container no longer uses the host network: Docker publishes port 6768 on the private `--publish-address` only, which must be an address of one of the host's interfaces (§3.3.2); `--check` counts any other binding; CI checks that the runner's primary address and `127.0.0.1` refuse the port |
+| Docker's bridge networking changes the host's forwarding and firewall | it turns on IPv4 forwarding, adds its own iptables chains and NAT rules, and may set the `FORWARD` policy to `DROP`, which can stop other forwarded traffic (a router, a VPN subnet router or exit node); its published-port rules act before `ufw`-style `INPUT` rules. Documented in §3.3.2 and printed by `--plan`; `setup.sh` changes no daemon setting; the real-device run checks it (§6.6) |
+| The publish address does not exist yet when Docker starts the container after a reboot (an address on a VPN interface) | Docker cannot bind the port and the container stays stopped; `--check` counts it `INACTIVE`; §3.3.2 says how to order `docker.service` after that interface; the reboot step of §6.6 covers it |
 | Orca's workspace directory or other internals change upstream | `setup.sh` relies only on Orca's documented default (`~/orca/workspaces`) and never writes Orca's profile state; a different default shows up in `--plan` and in the real-device run (§6.6) |
 | GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification (Docker's no longer appears in its current guide; the recorded one comes from its earlier guides, §3.5) |
 | A GitHub release binary (marksman) is tampered with | GitHub's per-asset sha256 digest is required before it is copied into `~/.local/bin`; no digest, no install |
@@ -1000,11 +1096,12 @@ A publish job runs only on pushes to `main`.
 | Containers on Linux | Docker Engine |
 | GPU | detection only, in P4 |
 | Linux architecture | x86_64 only; no arm64 |
-| Network | not managed by `setup.sh`; the user provides the private route and passes the address to advertise |
+| Network | not managed by `setup.sh`; the user provides the private route and passes the address to advertise (and, on a Linux server, the host address to publish Orca's port on) |
 | Fedora/RHEL | not now; `pkg-fedora.sh` is kept as a placeholder |
 | Agent install source | npm whenever a package exists (§3.2); grok and agy use their official installers |
 | Orca on Linux | official `.deb` from GitHub releases (§3.3.1): installed on a client; on a server inside the image, run as `orca-ide serve --supervise` in the container (§3.3.2; until P5 under a systemd user unit) |
 | Linux server address | `--pairing-address <ip-or-host>` is required for `--apply --role server`; loopback and wildcards are refused |
+| Linux server port (2026-10-26, P5.1) | no host network: Docker publishes the container's port 6768 only on the server's private `--publish-address` (default: an IPv4 `--pairing-address`; required for a host name; an address of one of the host's interfaces), recorded in `compose.yaml`; the container keeps the host's name (§3.3.2, §6.7) |
 | Pairing link on a Linux server | never handled by `setup.sh`; the container runs with `--no-pairing` and the user runs `orca-ide serve` in an interactive `docker compose run --rm` while the container is stopped (§3.3.2) |
 | P2 acceptance | accepted on CI; pairing from a laptop client to a real Linux x86_64 machine is pending (§6) |
 | `computer-use` on Linux | installed: upstream ships a Linux AT-SPI helper; it needs a graphical session to drive apps (§3.3) |
