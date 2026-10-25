@@ -29,8 +29,8 @@ STEP_TIMEOUT=${ORCA_SETUP_REMOTE_TIMEOUT:-7200}
 usage() {
   cat <<'EOF'
 Usage: remote/provision.sh --environment NAME [--plan | --apply | --check] [--role server]
-                           [--pairing-address ADDRESS] [--task-source linear] [modules]
-                           [--destination DIR | --path DIR] [--fast-forward]
+                           [--pairing-address ADDRESS] [--publish-address IPV4] [--task-source linear]
+                           [modules] [--destination DIR | --path DIR] [--fast-forward]
 
 Run on the control machine (pairing role client) for one device saved with `orca environment add`.
 
@@ -43,6 +43,9 @@ Run on the control machine (pairing role client) for one device saved with `orca
   --role server   The device's pairing role. A paired device is dialed by this client, so it is always a server.
   --pairing-address ADDRESS
                   Passed to ./setup.sh --apply (Linux servers: the private address clients dial).
+  --publish-address IPV4
+                  Passed to ./setup.sh --apply (Linux servers: the device's own private IPv4 address that
+                  Docker publishes the Orca port on).
   --task-source linear
                   Passed to ./setup.sh --apply and --check.
   --destination DIR
@@ -68,6 +71,7 @@ usage_error() { printf '%s\n' "$*" >&2; usage >&2; exit 2; }
 mode=''
 environment=''
 pairing_address=''
+publish_address=''
 task_source=''
 destination=''
 existing_path=''
@@ -93,6 +97,8 @@ while [ $# -gt 0 ]; do
     --role=*) [ "${1#*=}" = server ] || usage_error "--role must be server: a device this client dials accepts runtime pairings (README section 5.1)" ;;
     --pairing-address) need_value "$1" $#; pairing_address=$2; shift ;;
     --pairing-address=*) pairing_address=${1#*=} ;;
+    --publish-address) need_value "$1" $#; publish_address=$2; shift ;;
+    --publish-address=*) publish_address=${1#*=} ;;
     --task-source) need_value "$1" $#; task_source=$2; shift ;;
     --task-source=*) task_source=${1#*=} ;;
     --destination) need_value "$1" $#; destination=$2; shift ;;
@@ -115,6 +121,10 @@ case "$task_source" in '' | linear) ;; *) usage_error "unknown task source: $tas
 if [ -n "$pairing_address" ]; then
   problem=$(pairing_address_problem "$pairing_address")
   [ -z "$problem" ] || usage_error "--pairing-address $pairing_address is refused: $problem."
+fi
+if [ -n "$publish_address" ]; then
+  problem=$(publish_address_problem "$publish_address")
+  [ -z "$problem" ] || usage_error "--publish-address $publish_address is refused: $problem."
 fi
 for dir in "$destination" "$existing_path"; do
   [ -z "$dir" ] || [[ "$dir" == /* ]] || usage_error "--destination and --path take an absolute path on the device, not: $dir"
@@ -387,9 +397,11 @@ verify_checkout() {
 setup_line() {
   local line name
   line="cd $(shq "$CHECKOUT") && ./setup.sh $1 --role server"
-  # Inside the orca-server container the address belongs to the host's compose.yaml.
+  # Inside the orca-server container the addresses belong to the host's compose.yaml.
   [ "${2:-}" != --with-address ] || [ -z "$pairing_address" ] || [ "$DEVICE_FORM" = orca-server ] ||
     line="$line --pairing-address $pairing_address"
+  [ "${2:-}" != --with-address ] || [ -z "$publish_address" ] || [ "$DEVICE_FORM" = orca-server ] ||
+    line="$line --publish-address $publish_address"
   for name in $modules; do line="$line $name"; done
   [ -z "$task_source" ] || line="$line --task-source $task_source"
   printf '%s\n' "$line"

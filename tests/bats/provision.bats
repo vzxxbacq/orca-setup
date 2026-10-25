@@ -195,6 +195,9 @@ changed_device() { grep -qE '^orca (project setup-clone|project setup-existing-f
   [ "$status" -eq 2 ]
   provision --environment lab --pairing-address 127.0.0.1
   [ "$status" -eq 2 ]
+  provision --environment lab --pairing-address devbox.example.net --publish-address devbox.example.net
+  [ "$status" -eq 2 ]
+  [[ "$output" == *'--publish-address devbox.example.net is refused: it is not an IPv4 address'* ]]
   provision --environment lab --bogus
   [ "$status" -eq 2 ]
 }
@@ -259,13 +262,14 @@ changed_device() { grep -qE '^orca (project setup-clone|project setup-existing-f
 }
 
 @test "--apply clones, then runs --plan, --apply and --check --json, and exits with the device's missing count" {
-  provision --environment lab --apply --pairing-address 203.0.113.10 --destination "$SB/device" --gpu --task-source linear
+  provision --environment lab --apply --pairing-address devbox.example.net --publish-address 203.0.113.10 \
+    --destination "$SB/device" --gpu --task-source linear
   [ "$status" -eq 2 ]
   [[ "$output" == *"+ orca project setup-clone --project github:vzxxbacq/orca-setup --host runtime:env-0001 --url $URL --destination $SB/device --json"* ]]
   [ -x "$SB/device/orca-setup/setup.sh" ]
   run cat "$R/setup-calls"
-  [ "${lines[0]}" = 'setup.sh --plan --role server --pairing-address 203.0.113.10 --gpu --task-source linear' ]
-  [ "${lines[1]}" = 'setup.sh --apply --role server --pairing-address 203.0.113.10 --gpu --task-source linear' ]
+  [ "${lines[0]}" = 'setup.sh --plan --role server --pairing-address devbox.example.net --publish-address 203.0.113.10 --gpu --task-source linear' ]
+  [ "${lines[1]}" = 'setup.sh --apply --role server --pairing-address devbox.example.net --publish-address 203.0.113.10 --gpu --task-source linear' ]
   [ "${lines[2]}" = 'setup.sh --check --json --role server --gpu --task-source linear' ]
   [ "${#lines[@]}" -eq 3 ]
 }
@@ -351,10 +355,10 @@ changed_device() { grep -qE '^orca (project setup-clone|project setup-existing-f
 @test "a Linux server in Docker: --plan and --check run in its container, --apply is refused before setup.sh" {
   existing_checkout
   touch "$R/docker-server"
-  provision --environment lab --pairing-address 203.0.113.10
+  provision --environment lab --pairing-address 203.0.113.10 --publish-address 203.0.113.10
   [ "$status" -eq 0 ]
   [[ "$output" == *'Device form: a Linux server in Docker; its Orca terminals run inside the orca-server container'* ]]
-  # The address belongs to the host's compose.yaml, so the plan inside the container does not get it.
+  # The addresses belong to the host's compose.yaml, so the plan inside the container does not get them.
   [ "$(cat "$R/setup-calls")" = 'setup.sh --plan --role server' ]
   provision --environment lab --check
   [ "$status" -eq 2 ]

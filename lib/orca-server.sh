@@ -1,12 +1,13 @@
-# shellcheck shell=bash disable=SC2154 # pairing_address, upgrade_image, task_source and modules come from setup.sh
+# shellcheck shell=bash disable=SC2154 # setup.sh sets pairing_address, publish_address, PUBLISH_*, upgrade_image, task_source, modules
 # The Linux server (--role server, README section 6.7): Orca and every agent run in the orca-server container from
 # ghcr.io/vzxxbacq/orca-server; the host gets Docker Engine only (lib/docker-host.sh). The container runs as the
-# user's UID:GID with the user's home path as HOME, on the host network, with a read-only root filesystem; its home is
-# a dedicated host directory, and the work, Orca data and agent directories of manifest/server-mounts.tsv are
-# bind-mounted at the same paths. The image digest is locked in image.lock; only --upgrade-image moves it.
+# user's UID:GID with the user's home path as HOME, on its compose project's bridge network with port 6768 published
+# on one private host address only (the publish address), with a read-only root filesystem; its home is a dedicated
+# host directory, and the work, Orca data and agent directories of manifest/server-mounts.tsv are bind-mounted at the
+# same paths. The image digest is locked in image.lock; only --upgrade-image moves it.
 # The server runs with --no-pairing and setup.sh never asks for a pairing offer, so no pairing URL is ever printed,
-# logged or written by these scripts. Uses setup.sh's pairing_address, workdir, upgrade_image, task_source, modules,
-# check_json and report.
+# logged or written by these scripts. Uses setup.sh's pairing_address, publish_address, PUBLISH_ADDRESS,
+# PUBLISH_PROBLEM, workdir, upgrade_image, task_source, modules, check_json and report.
 
 ORCA_SERVER_PORT=6768
 ORCA_SERVER_NAME=orca-server # compose project, service and container
@@ -58,6 +59,32 @@ pairing_address_problem() {
   elif [ "${#address}" -gt 253 ] || ! [[ "$address" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.?$ ]]; then
     echo 'it is neither an IPv4 address nor a host name'
   fi
+}
+
+# ipv4_shaped <value>: four dot-separated numbers, i.e. meant as an IPv4 address rather than a host name.
+ipv4_shaped() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+
+# publish_address_problem <address>: why Docker must not publish the server's port on this host address; prints
+# nothing when it may. Only an IPv4 address in its plain form (as `ip` lists it); loopback, wildcard, broadcast and
+# multicast addresses are refused, with the same test-only loopback override as the pairing address.
+publish_address_problem() {
+  local problem
+  [[ "$1" =~ ^(0|[1-9][0-9]{0,2})(\.(0|[1-9][0-9]{0,2})){3}$ ]] ||
+    { echo 'it is not an IPv4 address (four decimal numbers without leading zeros)'; return; }
+  problem=$(pairing_address_problem "$1")
+  [ -z "$problem" ] || { echo "$problem"; return; }
+  [ "${1%%.*}" -lt 224 ] || [ "${1%%.*}" -gt 239 ] || echo 'it is a multicast address'
+}
+
+# publish_address_local_problem <address>: why Docker could not bind the port on this address; empty when one of the
+# host's network interfaces has it (ip -4 -o addr show). With the test-only loopback override any 127.0.0.0/8
+# address will do: the kernel answers all of them on lo.
+publish_address_local_problem() {
+  case "$1" in 127.*) [ "${ORCA_SETUP_TEST_LOOPBACK_PAIRING_ADDRESS:-}" != 1 ] || return 0 ;; esac
+  have ip || { echo 'it cannot be checked: the ip command (iproute2) is missing'; return; }
+  ip -4 -o addr show 2>/dev/null | awk -v address="$1" '
+    { for (i = 1; i < NF; i++) if ($i == "inet") { split($(i + 1), cidr, "/"); if (cidr[1] == address) found = 1 } }
+    END { exit !found }' || echo 'it is not assigned to a network interface of this host'
 }
 
 # ---------------------------------------------------------------- paths and mounts
@@ -147,6 +174,31 @@ server_compose_value() {
   sed -n "s/^  $1: \"\\(.*\\)\"\$/\\1/p" "$(server_compose_file)" | head -n 1
 }
 
+# server_publish_address: the host address port 6768 is published on. --publish-address; else the recorded one, which
+# is kept unless it was the default (the recorded pairing address) and --pairing-address now names another; else the
+# pairing address (given, else recorded) when it is an IPv4 address. Empty when there is none: clients may resolve a
+# host name to an address this host never sees (a VPN mapping), so a host name needs --publish-address.
+server_publish_address() {
+  local recorded recorded_pairing pairing
+  if [ -n "$publish_address" ]; then printf '%s\n' "$publish_address"; return; fi
+  recorded=$(server_compose_value publish-address)
+  recorded_pairing=$(server_compose_value pairing-address)
+  if [ -n "$recorded" ] &&
+    { [ "$recorded" != "$recorded_pairing" ] || [ -z "$pairing_address" ] || [ "$pairing_address" = "$recorded_pairing" ]; }; then
+    printf '%s\n' "$recorded"
+    return
+  fi
+  pairing=${pairing_address:-$recorded_pairing}
+  if ipv4_shaped "$pairing"; then printf '%s\n' "$pairing"; fi
+}
+
+# server_publish_source: where PUBLISH_ADDRESS came from (for messages).
+server_publish_source() {
+  if [ -n "$publish_address" ]; then echo '--publish-address'
+  elif [ "$PUBLISH_ADDRESS" = "$(server_compose_value publish-address)" ]; then echo "recorded in $(tilde "$(server_compose_file)")"
+  else echo 'the pairing address'; fi
+}
+
 # server_limit_lines: service options for the optional container limits, read from manifest/server-limits.env and
 # overridden key by key from manifest/local/server-limits.env. Unknown keys and malformed values stop the run.
 server_limit_lines() {
@@ -178,7 +230,7 @@ server_volume() { # <host path> <container path> [ro]
 # the image has no overlay, and the setup.sh inside the container applies the Orca settings and skills.
 server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 
-# server_compose_render <image> <workdir> <pairing-address> <config>: the compose.yaml content.
+# server_compose_render <image> <workdir> <pairing-address> <publish-address> <config>: the compose.yaml content.
 server_compose_render() {
   local volumes limits path
   volumes=$(server_volume "$(server_home)" "$HOME"
@@ -186,9 +238,9 @@ server_compose_render() {
     server_volume "$(server_overlay_dir)" "$ORCA_SERVER_ROOT/manifest/local" ro) || return 1
   limits=$(server_limit_lines) || return 1
   # Values go through ENVIRON: awk -v would interpret backslashes and cannot hold several lines everywhere.
-  RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_CONFIG=$4 RENDER_PORT=$ORCA_SERVER_PORT \
-    RENDER_UID=$(id -u) RENDER_GID=$(id -g) RENDER_HOME=$HOME RENDER_USER=$(id -un) RENDER_VOLUMES=$volumes \
-    RENDER_LIMITS=$limits awk '
+  RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_PUBLISH_ADDRESS=$4 RENDER_CONFIG=$5 \
+    RENDER_PORT=$ORCA_SERVER_PORT RENDER_HOSTNAME=$(uname -n) RENDER_UID=$(id -u) RENDER_GID=$(id -g) RENDER_HOME=$HOME \
+    RENDER_USER=$(id -un) RENDER_VOLUMES=$volumes RENDER_LIMITS=$limits awk '
     /^@VOLUMES@$/ { print ENVIRON["RENDER_VOLUMES"]; next }
     /^@LIMITS@$/ { if (ENVIRON["RENDER_LIMITS"] != "") print ENVIRON["RENDER_LIMITS"]; next }
     { line = $0
@@ -201,13 +253,14 @@ server_compose_render() {
   ' "$ORCA_SETUP_ROOT/docker/compose.yaml"
 }
 
-# server_compose <image> <workdir> <pairing-address>: the compose.yaml content, labelled with a checksum of itself,
-# which the container keeps as org.orca-setup.config: a container created from another file is re-created.
+# server_compose <image> <workdir> <pairing-address> <publish-address>: the compose.yaml content, labelled with a
+# checksum of itself, which the container keeps as org.orca-setup.config: a container created from another file is
+# re-created.
 server_compose() {
   local draft config
-  draft=$(server_compose_render "$1" "$2" "$3" -) || return 1
+  draft=$(server_compose_render "$1" "$2" "$3" "$4" -) || return 1
   config=$(printf '%s\n' "$draft" | cksum | awk '{ print $1 "-" $2 }')
-  server_compose_render "$1" "$2" "$3" "$config"
+  server_compose_render "$1" "$2" "$3" "$4" "$config"
 }
 
 # ---------------------------------------------------------------- image.lock
@@ -422,7 +475,7 @@ server_setup_args() {
 server_container_apply() { # <workdir>
   local compose rendered state config arg waited=0 limit=${ORCA_SETUP_SERVE_WAIT:-120} args=()
   compose=$(server_compose_file)
-  rendered=$(server_compose "$SERVER_IMAGE" "$1" "$pairing_address") || exit 1
+  rendered=$(server_compose "$SERVER_IMAGE" "$1" "$pairing_address" "$PUBLISH_ADDRESS") || exit 1
   config=$(printf '%s\n' "$rendered" | sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p')
   if [ -f "$compose" ] && [ "$(cat "$compose")" = "$rendered" ]; then info "PRESENT $(tilde "$compose")"
   else
@@ -464,7 +517,14 @@ server_plan() { # <workdir>
   if [ -z "$pairing_address" ]; then
     info '  missing  --pairing-address <ip-or-host>: the private address clients dial (README section 1); --apply requires it'
   else
-    info "  address  $pairing_address (advertised to clients; port $ORCA_SERVER_PORT on the host network)"
+    info "  address  $pairing_address (advertised to clients)"
+  fi
+  if [ -z "$PUBLISH_ADDRESS" ]; then
+    info "  missing  --publish-address <ipv4>: this host's private IPv4 address that Docker publishes port $ORCA_SERVER_PORT on (default: an IPv4 --pairing-address); --apply requires one"
+  elif [ -n "$PUBLISH_PROBLEM" ]; then
+    info "  refuse   publishing port $ORCA_SERVER_PORT on $PUBLISH_ADDRESS ($(server_publish_source)): $PUBLISH_PROBLEM; pass --publish-address <ipv4>"
+  else
+    info "  publish  $PUBLISH_ADDRESS:$ORCA_SERVER_PORT ($(server_publish_source)); port $ORCA_SERVER_PORT is not reachable on this host's other addresses"
   fi
   info "  workdir  $(tilde "$1") (projects/ and workspaces/; Orca's workspace directory is ~/orca/workspaces)"
   info '  host     only Docker Engine is installed here; Orca, its CLI and every agent run in the container'
@@ -479,8 +539,11 @@ server_plan() { # <workdir>
   info '  check    the pairing role, read-only inside the image, before the container starts'
   if [ -f "$(server_compose_file)" ]; then info "  render   $(tilde "$(server_compose_file)") (rewritten when it differs)"
   else info "  write    $(tilde "$(server_compose_file)")"; fi
-  info "           $ORCA_SERVER_NAME: user $(id -u):$(id -g), home $(tilde "$HOME") from $(tilde "$(server_home)"), host network,"
+  info "           $ORCA_SERVER_NAME: user $(id -u):$(id -g), home $(tilde "$HOME") from $(tilde "$(server_home)"), host name $(uname -n),"
   info '           read-only root filesystem with a tmpfs /tmp, restart unless-stopped, no sudo and no Docker inside'
+  info "  network  the compose project's bridge network; only port $ORCA_SERVER_PORT is published, on ${PUBLISH_ADDRESS:-the publish address} alone"
+  info "           Docker's bridge networking turns on IPv4 forwarding and adds its own iptables rules; when it turns"
+  info '           forwarding on itself it also sets the iptables FORWARD policy to DROP (README section 8)'
   info "  start    docker compose up --detach (when not running as rendered); wait until \`orca-ide status\` in it reaches the runtime"
   info "  orca     skills and settings inside it: docker exec $ORCA_SERVER_NAME $ORCA_SERVER_ROOT/setup.sh $(server_setup_args no --apply | paste -sd ' ' -)"
   info '  pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)'
@@ -490,6 +553,10 @@ server_apply() { # <workdir>
   local legacy name
   [ -n "$pairing_address" ] ||
     die '--apply --role server on Linux requires --pairing-address <ip-or-host>, the private address clients dial (README section 3.3.2).'
+  [ -n "$PUBLISH_ADDRESS" ] ||
+    die "--pairing-address $pairing_address is a host name, so --apply --role server also needs --publish-address <ipv4>: this host's own private IPv4 address that Docker publishes port $ORCA_SERVER_PORT on (README section 3.3.2)."
+  [ -z "$PUBLISH_PROBLEM" ] ||
+    die "port $ORCA_SERVER_PORT cannot be published on $PUBLISH_ADDRESS ($(server_publish_source)): $PUBLISH_PROBLEM. Pass --publish-address <ipv4>, this host's own private IPv4 address that clients reach (README section 3.3.2)."
   if legacy=$(legacy_serve_unit); then
     die "the native Orca server unit an earlier orca-setup wrote is still installed ($(tilde "$legacy")); its Orca would share ~/.orca and port $ORCA_SERVER_PORT with the container. Remove it first: $(legacy_serve_unit_steps "$legacy")"
   fi
@@ -522,6 +589,36 @@ server_newest_digest() {
     grep -o '"digest": *"sha256:[0-9a-f]\{64\}"' | head -n 1 | sed 's/.*"\(sha256:[0-9a-f]*\)"$/\1/'
 }
 
+# server_published: the container's network mode on the first line, then "<host ip>|<host port>|<port>/<protocol>"
+# for every port it publishes (a running container's actual bindings).
+server_published() {
+  # shellcheck disable=SC2016 # a Go template, not shell expansions
+  dk container inspect --format '{{.HostConfig.NetworkMode}}{{println}}{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}}|{{.HostPort}}|{{$port}}{{println}}{{end}}{{end}}' \
+    "$ORCA_SERVER_NAME" 2>/dev/null
+}
+
+# server_check_endpoint: where the running container publishes; anything but port 6768 on the publish address alone
+# (the host network, another or a wildcard address, other ports) is counted. Sets SERVER_ENDPOINT.
+server_check_endpoint() {
+  local published bindings
+  published=$(server_published) || published=''
+  bindings=$(printf '%s\n' "$published" | sed 1d | grep . || true)
+  SERVER_ENDPOINT=$(printf '%s\n' "$bindings" | awk -F'|' -v port="$ORCA_SERVER_PORT/tcp" 'NF == 3 {
+    host = ($1 == "") ? "*" : (($1 ~ /:/) ? "[" $1 "]" : $1)
+    printf "%s%s:%s", sep, host, $2; if ($3 != port) printf " (to %s)", $3; sep = ", " }')
+  if [ "$(printf '%s\n' "$published" | head -n 1)" = host ]; then
+    SERVER_ENDPOINT=host
+    report "WRONG (it runs on the host network: port $ORCA_SERVER_PORT answers on every host address; --apply re-creates it)" 'Published endpoint'
+  elif [ -n "$PUBLISH_ADDRESS" ] && [ "$bindings" = "$PUBLISH_ADDRESS|$ORCA_SERVER_PORT|$ORCA_SERVER_PORT/tcp" ]; then
+    report "$SERVER_ENDPOINT (not reachable on this host's other addresses)" 'Published endpoint'
+  elif [ -n "$PUBLISH_ADDRESS" ]; then
+    report "WRONG (published on ${SERVER_ENDPOINT:-nothing}; expected $PUBLISH_ADDRESS:$ORCA_SERVER_PORT only; --apply re-creates it)" 'Published endpoint'
+  else
+    report "WRONG (published on ${SERVER_ENDPOINT:-nothing}; no publish address is recorded: run --apply --role server with --publish-address)" 'Published endpoint'
+  fi
+  SERVER_ENDPOINT=${SERVER_ENDPOINT:-none}
+}
+
 # server_check_host <workdir>: the host's items (report from setup.sh). Sets SERVER_CONTAINER (the container's
 # status, or missing / unknown) and SERVER_INFO ("key<TAB>value" lines for --check --json).
 server_check_host() {
@@ -550,7 +647,9 @@ server_check_host() {
     elif [ "$SERVER_CONTAINER" = running ]; then report running 'Orca server container'
     else report "INACTIVE ($SERVER_CONTAINER; --apply starts it)" 'Orca server container'; fi
   fi
-  SERVER_INFO+=("container"$'\t'"$SERVER_CONTAINER" "workdir"$'\t'"$1")
+  SERVER_ENDPOINT=none
+  [ "$SERVER_CONTAINER" != running ] || server_check_endpoint
+  SERVER_INFO+=("container"$'\t'"$SERVER_CONTAINER" "endpoint"$'\t'"$SERVER_ENDPOINT" "workdir"$'\t'"$1")
   while IFS=$'\t' read -r path _; do
     if [ ! -e "$path" ]; then report MISSING "Mount $(tilde "$path")"
     elif [ ! -d "$path" ]; then report 'MISSING (not a directory)' "Mount $(tilde "$path")"

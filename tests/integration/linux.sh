@@ -7,13 +7,14 @@
 #   linux.sh server   directly on a GitHub-hosted Ubuntu 24.04 runner VM (systemd), as the runner user, with the
 #                     Orca server image built from this checkout and served by a local registry (ORCA_SETUP_IMAGE):
 #                     --apply --role server uses the runner's preinstalled Docker as it is, starts the orca-server
-#                     container, and masks the sleep targets (--power).
+#                     container with port 6768 published on 127.0.0.2 only, and masks the sleep targets (--power).
 # Both also pass --gpu (detection only; the runners have no NVIDIA GPU).
 #
 # Both modes then check that a second --apply changes nothing, that no output carries a pairing URL, and that
 # --check counts only interactive authentication items. The server also checks the container: the runtime answers,
-# mounted data survives a re-create owned by the runner user, writes outside the mounts fail, and --upgrade-image
-# moves to a newer image.
+# Orca answers on 127.0.0.2:6768 but not on the runner's primary address or 127.0.0.1 (also for the documented
+# pairing command), mounted data survives a re-create owned by the runner user, writes outside the mounts fail, and
+# --upgrade-image moves to a newer image.
 set -euo pipefail
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 work=$(mktemp -d)
@@ -67,15 +68,35 @@ docker_state() {
   docker --version 2>/dev/null || true
 }
 
-# wait_runtime: until the Orca runtime in the container answers (after a re-create).
+# wait_runtime [container]: until the Orca runtime in the container (orca-server) answers (after a re-create).
 wait_runtime() {
   local waited=0
-  until docker exec orca-server sh -c 'orca-ide status --json 2>/dev/null' >"$work/status.json" &&
+  until docker exec "${1:-orca-server}" sh -c 'orca-ide status --json 2>/dev/null' >"$work/status.json" &&
     node "$repo/lib/json.cjs" has result.runtime.reachable <"$work/status.json"; do
     [ "$waited" -lt 120 ] || fail 'the Orca runtime in the container is not reachable'
     sleep 2
     waited=$((waited + 2))
   done
+}
+
+# tcp_open <address> <port>: a TCP connection from this host succeeds within 5 seconds.
+# shellcheck disable=SC2016 # expanded by the inner bash
+tcp_open() { timeout 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$1" "$2" 2>/dev/null; }
+
+# check_published <container>: the container publishes port 6768 on 127.0.0.2 only (the publish address, which
+# defaults to the pairing address). Orca itself answers there over HTTP (a status code, not just docker-proxy's
+# accept), which also shows that orca-ide serve listens beyond the container's loopback; the runner's primary
+# address (its default route's, eth0 on GitHub's runners) and 127.0.0.1 refuse the port. No address is printed.
+check_published() {
+  local code primary
+  [ "$(docker port "$1")" = '6768/tcp -> 127.0.0.2:6768' ] || { docker port "$1"; fail "$1 publishes more or other than 127.0.0.2:6768"; }
+  code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' http://127.0.0.2:6768/ 2>/dev/null) || true
+  [[ "$code" =~ ^[1-5][0-9][0-9]$ ]] || fail "Orca does not answer HTTP on 127.0.0.2:6768 ($1)"
+  primary=$(ip -4 route get 192.0.2.1 | awk '{ for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit } }')
+  [ -n "$primary" ] || fail 'the runner has no primary IPv4 address'
+  if tcp_open "$primary" 6768; then fail "port 6768 answers on the runner's primary address ($1)"; fi
+  if tcp_open 127.0.0.1 6768; then fail "port 6768 answers on 127.0.0.1 ($1)"; fi
+  echo "port 6768 ($1): only 127.0.0.2 is published, Orca answers there (HTTP $code); the primary address and 127.0.0.1 refuse it"
 }
 
 [ "$mode" = client ] || docker_state >"$work/docker-before"
@@ -148,7 +169,10 @@ else
   [ "$(head -n 1 "$compose")" = '# orca-setup: Orca server container for this user' ] || fail 'compose.yaml is not the rendered one'
   grep -qxE "image=${ORCA_SETUP_IMAGE%:*}@sha256:[0-9a-f]{64}" "$lock" || fail 'image.lock does not hold the pulled digest'
   [ "$(docker inspect --format '{{.State.Status}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.RestartPolicy.Name}} {{.HostConfig.Init}}' orca-server)" = \
-    'running host true unless-stopped true' ] || fail 'the container does not run as rendered'
+    'running orca-server_default true unless-stopped true' ] || fail 'the container does not run as rendered'
+  grep -qxF '  publish-address: "127.0.0.2"' "$compose" || fail 'compose.yaml does not record the publish address'
+  [ "$(docker exec orca-server cat /proc/sys/kernel/hostname)" = "$(cat /proc/sys/kernel/hostname)" ] ||
+    fail "the container does not carry the host's name"
   [ "$(docker exec orca-server id -u):$(docker exec orca-server id -g)" = "$(id -u):$(id -g)" ] || fail 'the container does not run as the runner user'
   # shellcheck disable=SC2016 # expanded in the container
   [ "$(docker exec orca-server sh -c 'printf %s "$HOME"')" = "$HOME" ] || fail 'the container HOME is not the host home path'
@@ -160,6 +184,7 @@ else
   docker logs orca-server >"$work/container.log" 2>&1
   no_pairing_secret "$work/status.json" "$work/container.log"
   echo "status reply reachable; container log: $(wc -l <"$work/container.log") lines, no pairing URL"
+  check_published orca-server
   echo '::endgroup::'
 
   echo '::group::mounts survive a re-create'
@@ -178,6 +203,26 @@ else
     if docker exec orca-server sh -c "touch $path" 2>/dev/null; then fail "a write outside the mounts succeeded: $path"; fi
   done
   echo 'writes outside the mounts fail (read-only root filesystem)'
+  check_published orca-server
+  echo '::endgroup::'
+
+  echo '::group::the pairing command publishes the same way'
+  # README section 3.3.2, run where the rendered compose.yaml is, plus --no-pairing (CI never creates a pairing
+  # offer), detached and named for the checks.
+  (
+    cd "$(dirname "$compose")"
+    docker compose stop
+    docker compose run --rm --service-ports --detach --name orca-setup-ci-pairing orca-server \
+      orca-ide serve --port 6768 --pairing-address 127.0.0.2 --no-pairing
+  )
+  wait_runtime orca-setup-ci-pairing
+  check_published orca-setup-ci-pairing
+  docker logs orca-setup-ci-pairing >"$work/pairing.log" 2>&1
+  no_pairing_secret "$work/pairing.log"
+  docker stop orca-setup-ci-pairing
+  (cd "$(dirname "$compose")" && docker compose start)
+  wait_runtime
+  check_published orca-server
   echo '::endgroup::'
 
   echo '::group::modules and the preinstalled Docker'
@@ -203,6 +248,8 @@ else expected=$'GitHub auth: PENDING\nOrca Codex: PENDING'; fi
 [ "$counted" = "$expected" ] || fail "--check counts more than interactive authentication: $counted"
 [ "$status" -eq "$(grep -c . <<<"$expected")" ] || fail "--check exit code $status"
 grep -qx 'NVIDIA GPU: none found (not counted)' "$work/check.log" || fail '--check --gpu did not report the (absent) GPU'
+[ "$mode" = client ] || grep -qx "Published endpoint: 127.0.0.2:6768 (not reachable on this host's other addresses)" "$work/check.log" ||
+  fail '--check does not report the published endpoint'
 
 echo '::group::--check --json'
 json_status=0
@@ -212,6 +259,7 @@ echo '::endgroup::'
 no_pairing_secret "$work/check.json"
 [ "$json_status" -eq "$status" ] || fail "--check --json exit code $json_status differs from --check ($status)"
 grep -qx "missing $status" "$work/check-summary.txt" || fail '--check --json does not report the same missing count'
+[ "$mode" = client ] || grep -q '"endpoint": "127.0.0.2:6768"' "$work/check.json" || fail '--check --json does not report the published endpoint'
 
 if [ "$mode" = server ]; then
   echo '::group::--upgrade-image'
@@ -227,6 +275,7 @@ if [ "$mode" = server ]; then
   [ "$(docker inspect --format '{{.Image}}' orca-server)" != "$before" ] || fail '--upgrade-image did not re-create the container'
   wait_runtime
   [ "$(cat "$HOME/orca/projects/ci-persist")" = persisted ] || fail 'the mounted file did not survive the upgrade'
+  check_published orca-server
   no_pairing_secret "$work/third.log" "$work/upgrade.log"
   echo '::endgroup::'
 fi
