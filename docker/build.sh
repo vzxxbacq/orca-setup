@@ -48,12 +48,12 @@ rm -rf /var/lib/apt/lists/* "$HOME/.npm" "$HOME/.cache"
 chmod -R a+rX "$HOME"
 # The image's default user would take UID 1000, which most host users have.
 if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu; fi
-# The container runs as the host user's UID:GID with a read-only root filesystem: docker/entrypoint.sh writes the
-# user's entry next to the image's own ones on /tmp, where these links point.
-mv /etc/passwd /etc/passwd.image
-mv /etc/group /etc/group.image
-ln -s /tmp/passwd /etc/passwd
-ln -s /tmp/group /etc/group
+# The container runs as the host user's UID:GID on a read-only root filesystem: libnss-extrausers (an "image" row)
+# also reads /var/lib/extrausers, a link to the container's /tmp, where docker/entrypoint.sh writes the user's entry.
+# /etc/passwd itself stays the image's, so images built FROM this one (manifest/local/Dockerfile) can still use apt.
+sed -i -E 's/^(passwd|group):(.*)$/\1:\2 extrausers/' /etc/nsswitch.conf
+rm -rf /var/lib/extrausers
+ln -s /tmp/extrausers /var/lib/extrausers
 # The marker for setup.sh and remote/provision.sh: this is the Orca server image (also ORCA_SETUP_CONTAINER).
 printf 'orca-server\n' >/etc/orca-server-image
 info 'orca-setup: the Orca server image is ready'

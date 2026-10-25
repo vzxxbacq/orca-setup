@@ -43,7 +43,8 @@ state() {
   # shellcheck disable=SC2016 # dpkg-query format fields
   dpkg-query -W -f '${Package} ${Version}\n'
   # A running orca-ide serve writes its own orca and orca-ide shims into ~/.local/bin (upstream, not setup.sh).
-  find /etc/apt/keyrings /etc/apt/sources.list.d "$HOME/.local/bin" -maxdepth 1 -print 2>/dev/null |
+  # A server host has no ~/.local/bin (its tools are in the image), so a missing directory is not an error here.
+  { find /etc/apt/keyrings /etc/apt/sources.list.d "$HOME/.local/bin" -maxdepth 1 -print 2>/dev/null || true; } |
     grep -vxF -e "$HOME/.local/bin/orca" -e "$HOME/.local/bin/orca-ide" | sort
   sha256sum /etc/apt/keyrings/* /etc/apt/sources.list.d/* "$HOME/.profile" "$HOME/.zshrc" "$HOME/.bash_profile" \
     "$compose" "$lock" 2>/dev/null || true

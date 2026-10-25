@@ -78,7 +78,7 @@ server_workdir_problem() {
   case "$dir/" in
     "$HOME"/orca/?*) echo 'it is inside ~/orca; use ~/orca itself'; return ;;
     "$(server_home)"/* | "$(server_config_dir)"/*) echo "it is inside orca-setup's own directories"; return ;;
-    /bin/* | /boot/* | /dev/* | /etc/* | /lib/* | /lib64/* | /proc/* | /run/* | /sbin/* | /sys/* | /tmp/* | /usr/* | /var/run/* | \
+    /bin/* | /boot/* | /dev/* | /etc/* | /lib/* | /lib64/* | /proc/* | /run/* | /sbin/* | /sys/* | /usr/* | /var/run/* | \
       /opt/orca-setup/* | /opt/orca-agents/* | /opt/Orca/*)
       echo 'it is a system directory, or one the image needs'; return ;;
   esac
@@ -316,7 +316,7 @@ server_runtime_reachable() {
 
 # server_dirs_apply <workdir>: every directory the container needs, as yours.
 server_dirs_apply() {
-  local path created=0 link
+  local path created=0 link points
   while IFS=$'\t' read -r path _; do
     if [ -e "$path" ] || [ -L "$path" ]; then
       [ -d "$path" ] || die "$(tilde "$path") exists but is not a directory; the container mounts it."
@@ -335,9 +335,10 @@ server_dirs_apply() {
     step ln -s "$1" "$link"
     created=$((created + 1))
   fi
-  while IFS= read -r path; do
-    [ -d "$path" ] || { step mkdir -p "$path"; created=$((created + 1)); }
-  done < <(server_mount_points "$1")
+  # The mount points inside the container's home, in one step.
+  points=()
+  while IFS= read -r path; do [ -d "$path" ] || points+=("$path"); done < <(server_mount_points "$1")
+  if [ "${#points[@]}" -gt 0 ]; then step mkdir -p "${points[@]}"; created=$((created + 1)); fi
   [ "$created" -gt 0 ] || info 'PRESENT directories for the container (owned by you)'
 }
 

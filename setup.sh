@@ -163,7 +163,8 @@ fi
 SERVER_HOST=no
 WORKDIR=''
 if [ "$PLATFORM" = debian ] && ! in_container && [ "$(linux_role)" = server ]; then SERVER_HOST=yes; fi
-if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ]; then
+# An unsupported device is refused by every mode, with its reason, before anything here matters.
+if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported ]; then
   case "$workdir" in \~) workdir=$HOME ;; \~/*) workdir=$HOME/${workdir#\~/} ;; esac
   while [ "$workdir" != / ] && [ "${workdir%/}" != "$workdir" ]; do workdir=${workdir%/}; done
   WORKDIR=${workdir:-$(server_compose_value workdir)}
