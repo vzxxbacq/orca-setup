@@ -1,0 +1,8 @@
+# The Linux server host (--role server, README section 6.7) installs only Docker Engine: the "containers" rows of
+# baseline.tsv, after the baseline.tsv rows named here, which Docker's apt repository needs first. Everything else
+# (Node.js, the agents, the Orca .deb) is in the Orca server image.
+# Columns: name of a baseline.tsv row.
+
+curl
+ca-certificates
+gnupg

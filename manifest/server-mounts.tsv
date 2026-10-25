@@ -1,0 +1,21 @@
+# The Orca server container (Linux --role server, README section 6.7): directories bind-mounted at the same absolute
+# path on the host and in the container. setup.sh creates each one, owned by you, before the container starts.
+# Columns (tab-separated):
+#   path      {workdir} for --workdir (default ~/orca), otherwise relative to your home directory
+#   contents  what lives there (shown by --plan and --check)
+# A row in manifest/local/server-mounts.tsv with the same path replaces one here; other rows are added. The rest of
+# the container's home is ~/.local/share/orca-setup/home on the host: files written there persist as well, but only
+# these paths are your real home directory.
+
+{workdir}	projects/ and workspaces/; Orca's workspace directory is ~/orca/workspaces
+.orca	Orca user data: pairings, the device registry, sealed integration credentials
+.codex	Codex
+.claude	Claude Code; CLAUDE_CONFIG_DIR points here, so its state file .claude.json lives inside
+.config/gh	GitHub CLI
+.gemini	Gemini CLI, and the settings of Antigravity (agy)
+.antigravity	Antigravity (agy)
+.grok	Grok
+.dsh	DeepSeek (dsh)
+.dsh-tui	DeepSeek TUI (dsh-tui)
+.pi	Pi
+.omp	OMP

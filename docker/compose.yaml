@@ -1,0 +1,45 @@
+# orca-setup: Orca server container for this user
+# Rendered by `./setup.sh --apply --role server` from docker/compose.yaml (README section 6.7) into
+# ~/.config/orca-setup/docker/compose.yaml; rerun it to change this file instead of editing it. The first line marks
+# the file as orca-setup's, and x-orca-setup records the options it was rendered with.
+# --no-pairing: the server never creates a pairing offer, so nothing secret reaches its log. Pair a client from an
+# interactive `docker compose run --rm` instead (README section 3.3.2).
+name: orca-server
+x-orca-setup:
+  workdir: "@WORKDIR@"
+  pairing-address: "@PAIRING_ADDRESS@"
+services:
+  orca-server:
+    image: "@IMAGE@"
+    # The image is pulled and locked by setup.sh (image.lock); Compose never pulls or upgrades it.
+    pull_policy: never
+    container_name: orca-server
+    command: ["orca-ide", "serve", "--supervise", "--no-pairing", "--port", "@PORT@", "--pairing-address", "@PAIRING_ADDRESS@"]
+    # The pairing address and port 6768 are the host's own; nothing is mapped.
+    network_mode: host
+    # Docker starts it again after a reboot, unless it was stopped on purpose (docker compose stop).
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    # Your UID:GID, so every file in the mounts stays yours. No sudo and no Docker inside.
+    user: "@UID@:@GID@"
+    read_only: true
+    tmpfs:
+      - /tmp:exec,mode=1777
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      HOME: "@HOME@"
+      USER: "@USER@"
+      LOGNAME: "@USER@"
+      PATH: "@HOME@/.local/bin:/opt/orca-agents/.local/bin:/opt/orca-agents/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      # Claude Code keeps its state file in $CLAUDE_CONFIG_DIR/.claude.json instead of ~/.claude.json: a file of its
+      # own could not be bind-mounted, because Claude replaces it by renaming a new copy over it.
+      CLAUDE_CONFIG_DIR: "@HOME@/.claude"
+    labels:
+      org.orca-setup.config: "@CONFIG@"
+@LIMITS@
+    # Your home directory in the container is a dedicated host directory; the rest are the same paths as on the host
+    # (manifest/server-mounts.tsv). A missing host directory is an error, never created by Docker as root.
+    volumes:
+@VOLUMES@

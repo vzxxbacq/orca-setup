@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # apt packages, third-party apt repositories and the Orca .deb on Ubuntu 24.04 / Debian 12 (x86_64). Existing installs are
 # detected and never upgraded. as_root is the only place that calls sudo; in plan mode it prints each command
-# instead of running it, so --plan lists exactly the root commands --apply would run.
+# instead of running it, so --plan lists exactly the root commands --apply would run. The Orca server image build
+# (docker/build.sh) uses the same code as root.
 
 APT_KEYRINGS_DIR=${ORCA_SETUP_APT_KEYRINGS_DIR:-/etc/apt/keyrings}
 APT_SOURCES_DIR=${ORCA_SETUP_APT_SOURCES_DIR:-/etc/apt/sources.list.d}
@@ -14,6 +15,12 @@ as_root() {
   if [ "$DEBIAN_MODE" = plan ]; then
     printf '           sudo %s\n' "$*"
     return 0
+  fi
+  # Only the Orca server image build (docker/build.sh) runs as root; setup.sh refuses to.
+  if [ "$(id -u)" -eq 0 ]; then
+    printf '+ %s\n' "$*"
+    (umask 022 && "$@")
+    return
   fi
   have sudo || die 'sudo is required for the apt steps; install it and add your user to the sudo group.'
   printf '+ sudo %s\n' "$*"
@@ -287,4 +294,14 @@ debian_install() {
 # debian_plan <method>: print the root commands debian_install would run.
 debian_plan() {
   case "$1" in apt:* | apt-repo:* | orca-deb:* | github-release:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
+}
+
+# The Orca .deb may not declare every library its Electron runtime loads (README section 3.3.1): name the missing
+# ones before any Orca step instead of failing later inside orca-ide.
+require_orca_libraries() {
+  local libs
+  have ldd || return 0
+  libs=$(ldd "$(orca_executable)" 2>/dev/null | awk '/not found/ { print $1 }' | paste -sd ' ' -)
+  [ -z "$libs" ] ||
+    die "orca-ide cannot start: its runtime needs $libs, which the Orca .deb does not install; add their packages to manifest/local/baseline.tsv and rerun --apply."
 }

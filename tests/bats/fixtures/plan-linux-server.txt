@@ -1,63 +1,69 @@
 orca-setup plan (read-only; nothing is changed)
-Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide
+Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide (in the orca-server container)
 Pairing role: server (detected: none); accepts runtime pairings, never saves environments
 sudo: present; --apply runs only the sudo commands listed below as root
-Baseline tools (--apply):
-  present  git
-  present  git-lfs
-  present  ripgrep
-  present  jq
-  present  tmux
-  present  cmake
-  present  pkg-config
-  present  build-essential
+Orca server in Docker (--apply --role server; README section 6.7):
+  address  203.0.113.10 (advertised to clients; port 6768 on the host network)
+  workdir  ~/orca (projects/ and workspaces/; Orca's workspace directory is ~/orca/workspaces)
+  host     only Docker Engine is installed here; Orca, its CLI and every agent run in the container
+Docker Engine (--apply):
   present  curl
-  present  unzip
   present  ca-certificates
   present  gnupg
-  present  libgbm
-  present  libasound
-  present  gh
-  present  node
-  present  uv
-  present  pnpm
-  present  python
-  present  ruff
-  install  orca                   .deb from the latest stable stablyai/orca release
-           resolve the latest stable release of stablyai/orca with the GitHub API; download orca-ide_<version>_amd64.deb
-           require the sha256 digest GitHub records for that asset, and Package: orca-ide, Architecture: amd64
+  install  docker                 apt docker-ce from https://download.docker.com/linux/ubuntu
+           download https://download.docker.com/linux/ubuntu/gpg, require fingerprint(s) 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+           sudo install -d -m 0755 <sandbox>/apt/keyrings
+           sudo install -m 0644 <verified key> <sandbox>/apt/keyrings/docker.gpg
+           sudo install -m 0644 <source list> <sandbox>/apt/sources.list.d/docker.list
+             deb [arch=amd64 signed-by=<sandbox>/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable
            sudo env DEBIAN_FRONTEND=noninteractive apt-get update
-           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends <verified orca-ide_<version>_amd64.deb>
-Agent CLIs (--apply):
-  present  grok
-  present  agy
-  present  codex
-  present  claude
-  present  dsh
-  present  dsh-tui
-  present  pi
-  present  bun
-  present  omp
-PATH (--apply):
-  add      PATH block in ~/.profile    puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
-  add      PATH block in ~/.zshrc      puts ~/.local/bin and ~/.grok/bin on PATH (marked block)
-Pairing role check (--apply): after the baseline install, before any Orca step
-Orca server (--apply --role server):
-  address  203.0.113.10 (advertised to clients; port 6768)
-  enable   linger for builder (the user's services keep running after logout)
-           sudo loginctl enable-linger builder
-  write    ~/.config/systemd/user/orca-serve.service
-             ExecStart=/usr/bin/orca-ide serve --supervise --no-pairing --port 6768 --pairing-address 203.0.113.10
-  start    systemctl --user enable orca-serve.service, start it, wait until `orca-ide status` reaches the runtime
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-ce
+  install  docker-ce-cli          apt docker-ce-cli from https://download.docker.com/linux/ubuntu
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-ce-cli
+  install  containerd.io          apt containerd.io from https://download.docker.com/linux/ubuntu
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends containerd.io
+  install  docker-buildx-plugin   apt docker-buildx-plugin from https://download.docker.com/linux/ubuntu
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-buildx-plugin
+  install  docker-compose-plugin  apt docker-compose-plugin from https://download.docker.com/linux/ubuntu
+           sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin
+  join     the docker group (root-equivalent: its members control the Docker daemon)
+           sudo usermod -aG docker builder
+           until your next login, setup.sh reaches Docker through "sg docker" (no password, no sudo)
+Directories (--apply; owned by builder, at the same path in the container):
+  create   ~/orca (projects/ and workspaces/; Orca's workspace directory is ~/orca/workspaces)
+  create   ~/orca/projects (project checkouts)
+  create   ~/orca/workspaces (Orca's worktrees)
+  create   ~/.orca (Orca user data: pairings, the device registry, sealed integration credentials)
+  create   ~/.codex (Codex)
+  create   ~/.claude (Claude Code; CLAUDE_CONFIG_DIR points here, so its state file .claude.json lives inside)
+  create   ~/.config/gh (GitHub CLI)
+  create   ~/.gemini (Gemini CLI, and the settings of Antigravity (agy))
+  create   ~/.antigravity (Antigravity (agy))
+  create   ~/.grok (Grok)
+  create   ~/.dsh (DeepSeek (dsh))
+  create   ~/.dsh-tui (DeepSeek TUI (dsh-tui))
+  create   ~/.pi (Pi)
+  create   ~/.omp (OMP)
+  create   ~/.local/share/orca-setup/home (the container's home directory (files written there persist))
+Image (--apply):
+  pull     ghcr.io/vzxxbacq/orca-server:main and lock its digest in ~/.config/orca-setup/docker/image.lock
+           re-runs keep the locked digest; only --upgrade-image pulls a newer one
+Container (--apply):
+  check    the pairing role, read-only inside the image, before the container starts
+  write    ~/.config/orca-setup/docker/compose.yaml
+           orca-server: user 1000:1000, home ~ from ~/.local/share/orca-setup/home, host network,
+           read-only root filesystem with a tmpfs /tmp, restart unless-stopped, no sudo and no Docker inside
+  start    docker compose up --detach (when not running as rendered); wait until `orca-ide status` in it reaches the runtime
+  orca     skills and settings inside it: docker exec orca-server /opt/orca-setup/setup.sh --apply --role server
   pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)
-Orca (--apply):
-  skills and settings follow once Orca is installed and running
 Optional modules (add to --apply):
-  --power         Use sudo to mask the systemd sleep targets; remind you of the BIOS power-loss setting.
+  --power         Use sudo to mask the systemd sleep targets; remind you of the BIOS power-loss setting. [selected]
+    skip: systemd is not the init system here (a container?), so there are no sleep targets to mask
   --containers    Install Docker Engine from Docker's apt repository if missing; add you to the docker group.
   --apple         macOS only: skipped on Linux with a notice.
   --android       Install Android platform tools if missing.
-  --media         Install PDF/media processing helpers if missing.
+  --media         Install PDF/media processing helpers if missing. [selected]
+    built into the orca-server image; nothing to install on this host
   --agent-gemini  Install the Gemini CLI if missing (optional; not usable with personal accounts).
   --gpu           Report the NVIDIA GPU, driver, nvidia-smi and CUDA toolkit (detection only; never installs).
 Authentication (interactive, run on their own):

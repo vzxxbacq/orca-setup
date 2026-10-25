@@ -28,7 +28,7 @@ use_copy() {
 
 @test "groups are baseline or a known optional module" {
   run bash -c "cat '$REPO_ROOT/manifest/baseline.tsv' '$REPO_ROOT/manifest/agents.tsv' | awk -F'\t' '!/^[[:space:]]*(#|\$)/ { print \$3 }' | sort -u"
-  [ "$output" = "$(printf '%s\n' agent-gemini android apple baseline containers media)" ]
+  [ "$output" = "$(printf '%s\n' agent-gemini android apple baseline containers image media)" ]
 }
 
 @test "agent packages match README section 3.2" {

@@ -14,7 +14,7 @@ REAL_NODE=$(command -v node)
 REAL_PYTHON=$(command -v python3 || true)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
-SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch'
+SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch cksum ln readlink rmdir'
 
 make_sandbox() {
   SB=$BATS_TEST_TMPDIR/sandbox
@@ -27,11 +27,12 @@ make_sandbox() {
   export SB HOME=$SB/home
   export PATH=$SB/bin
   export ORCA_SETUP_BREW_PREFIX=$SB/brew
-  export ORCA_SETUP_DEB_CLI=$SB/no-deb-cli
   export ORCA_SETUP_APPLICATIONS_DIR=$SB/Applications
   export ORCA_USER_DATA=$SB/userdata
   export FAKE_LOG=$SB/fake.log
-  unset ORCA_CLI_COMMAND ORCA_APP_PATH ORCA_SETUP_OS_RELEASE DISPLAY WAYLAND_DISPLAY XDG_CONFIG_HOME XDG_DATA_HOME
+  unset ORCA_CLI_COMMAND ORCA_APP_PATH ORCA_SETUP_OS_RELEASE DISPLAY WAYLAND_DISPLAY XDG_CONFIG_HOME XDG_DATA_HOME \
+    ORCA_SETUP_IMAGE ORCA_SETUP_CONTAINER ORCA_SETUP_HOST_ITEMS ORCA_SETUP_HOST_DEVICE ORCA_SETUP_HOST_SERVER \
+    ORCA_SETUP_ROLE_CHECKED ORCA_SETUP_TEST_LOOPBACK_PAIRING_ADDRESS
   fake_uname Darwin arm64
   fake_cmd sw_vers 'echo 15.5'
 }
@@ -151,7 +152,9 @@ fake_linux() {
   # shellcheck disable=SC2016
   fake_cmd sudo 'echo "sudo $*" >>"$FAKE_LOG"
 case "$*" in
-  *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG" ;;
+  *"apt-get install"*) for p; do :; done; echo "$p" >>"$FAKE_DPKG"
+    # Docker Engine brings the docker command (see fake_docker).
+    if [ "$p" = docker-ce ] && [ -e "$SB/docker-stub" ]; then cp "$SB/docker-stub" "$SB/bin/docker"; fi ;;
   *"loginctl enable-linger"*) echo yes >"$SB/linger" ;;
   *"usermod -aG "*) printf " %s" "$3" >>"$SB/groups" ;;
   "systemctl mask "*) shift 2; printf "%s\n" "$@" >>"$SB/masked" ;;
@@ -165,7 +168,7 @@ esac'
   # A regular user with a fixed name, so snapshots do not depend on who runs the tests.
   # shellcheck disable=SC2016
   # `id -nG builder` reads the group database ($SB/groups); bare `id -nG` is this session, which never changes.
-  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -un) echo builder ;; -nG) if [ -n "${2:-}" ]; then echo "builder$(cat "$SB/groups" 2>/dev/null)"; else echo builder; fi ;; *) echo "uid=1000(builder)" ;; esac'
+  fake_cmd id 'case "${1:-}" in -u) echo 1000 ;; -g) echo 1000 ;; -un) echo builder ;; -nG) if [ -n "${2:-}" ]; then echo "builder$(cat "$SB/groups" 2>/dev/null)"; else echo builder; fi ;; *) echo "uid=1000(builder)" ;; esac'
 }
 
 # fake_orca_linux: Orca installed from the .deb, plus systemd. The CLI (orca-ide on PATH) answers status, skills
@@ -238,4 +241,118 @@ esac
 read -r magic fprs <"$file" || true
 [ "$magic" = FAKEKEY ] || exit 2
 for fpr in $fprs; do printf "pub:-:4096:1:%s:0:::-:::scESC::::::23::0:\nfpr:::::::::%s:\nsub:-:4096:1:0:0:::::e\nfpr:::::::::SUB%s:\n" "${fpr: -16}" "$fpr" "$fpr"; done'
+}
+
+# fake_docker [installed]: a Docker CLI and daemon in $SB/docker. With "installed" the docker command exists now,
+# otherwise it appears when the fake sudo installs docker-ce. The daemon answers while $SB/docker/daemon exists, to
+# this session when $SB/docker/session-group exists (the session has the docker group) or through the fake sg once
+# the group database lists the user. Pulls resolve tags through fake_registry; `compose up` records the container
+# from the compose file and starts the runtime ($SB/runtime-up); `run` and `exec` run their command here, with the
+# image's /opt/orca-setup mapped to this repository and ORCA_SETUP_CONTAINER set for exec, like inside the container.
+# Every call that talks to the daemon is logged without its --env values.
+fake_docker() {
+  mkdir -p "$SB/docker/images" "$SB/registry"
+  touch "$SB/docker/daemon" "$SB/docker/compose"
+  cat >"$SB/docker-stub" <<SH
+#!$REAL_BASH
+repo_root='$REPO_ROOT'
+real_bash='$REAL_BASH'
+SH
+  # shellcheck disable=SC2016 # the stub body expands when the stub runs
+  cat >>"$SB/docker-stub" <<'SH'
+key() { printf '%s' "$1" | tr '/:@' '___'; }
+if [ "${1:-}" = --version ]; then
+  if [ -e "$SB/docker/podman" ]; then echo 'podman version 5.0.3'; else echo 'Docker version 27.3.1, build fake'; fi
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = 'compose version' ]; then [ -e "$SB/docker/compose" ] && echo 2.29.7; exit; fi
+log=$(printf '%s ' docker "$@" | sed -E 's/(--env [A-Z_]+=)[^ ]*/\1.../g')
+access=no
+[ ! -e "$SB/docker/session-group" ] || access=yes
+if [ "${FAKE_SG:-}" = 1 ] && id -nG builder | tr ' ' '\n' | grep -qx docker; then access=yes; fi
+if [ ! -e "$SB/docker/daemon" ] || [ "$access" = no ]; then
+  echo 'permission denied while trying to connect to the Docker daemon socket' >&2
+  exit 1
+fi
+map() { mapped=(); for a; do mapped+=("${a//\/opt\/orca-setup/$repo_root}"); done; [ "${mapped[0]}" != sh ] || mapped[0]=$real_bash; }
+case "$1" in
+  version) echo 27.3.1 ;;
+  pull)
+    echo "${log% }" >>"$FAKE_LOG"
+    case "$2" in
+      *@sha256:*) ref=$2 ;;
+      *) [ -r "$SB/registry/$(key "$2")" ] || { echo "pull: $2 not found" >&2; exit 1; }
+         ref="${2%:*}@sha256:$(cat "$SB/registry/$(key "$2")")"
+         echo "$ref" >"$SB/docker/images/$(key "$2")" ;;
+    esac
+    echo "$ref" >"$SB/docker/images/$(key "$ref")" ;;
+  image)
+    ref=${!#}
+    [ -r "$SB/docker/images/$(key "$ref")" ] || exit 1
+    case " $* " in *RepoDigests*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
+  inspect)
+    [ -r "$SB/docker/container" ] || exit 1
+    cat "$SB/docker/container" ;;
+  compose)
+    echo "${log% }" >>"$FAKE_LOG"
+    file=$3
+    label=$(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$file")
+    echo "running $label" >"$SB/docker/container"
+    cp "$file" "$SB/docker/compose-used.yaml"
+    touch "$SB/runtime-up" ;;
+  build)
+    echo "${log% }" >>"$FAKE_LOG"
+    prev=''; for a; do [ "$prev" != --tag ] || echo "$a" >"$SB/docker/images/$(key "$a")"; prev=$a; done ;;
+  run)
+    shift
+    envs=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rm | --read-only) shift ;;
+        --env) envs+=("$2"); shift 2 ;;
+        --network | --tmpfs | --user | --volume) shift 2 ;;
+        *) break ;;
+      esac
+    done
+    echo "docker run $1 ${*:2}" >>"$FAKE_LOG"
+    [ -r "$SB/docker/images/$(key "$1")" ] || { echo "run: no image $1" >&2; exit 125; }
+    shift
+    map "$@"
+    env ${envs[@]+"${envs[@]}"} "${mapped[@]}" ;;
+  exec)
+    shift
+    envs=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --interactive | --tty | -i | -t | -it) shift ;;
+        --env) case "$2" in *=*) envs+=("$2") ;; *) envs+=("$2=${!2:-}") ;; esac; shift 2 ;;
+        *) break ;;
+      esac
+    done
+    [ "$(cut -d' ' -f1 "$SB/docker/container" 2>/dev/null)" = running ] || { echo "Error: container $1 is not running" >&2; exit 1; }
+    shift
+    echo "docker exec $*" >>"$FAKE_LOG"
+    map "$@"
+    env ORCA_SETUP_CONTAINER=orca-server ${envs[@]+"${envs[@]}"} "${mapped[@]}" ;;
+  buildx)
+    ref=${!#}
+    [ -r "$SB/registry/$(key "$ref")" ] || exit 1
+    printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%s","size":855,"manifests":[{"digest":"sha256:%s"}]}\n' \
+      "$(cat "$SB/registry/$(key "$ref")")" 1111111111111111111111111111111111111111111111111111111111111111 ;;
+  *) echo "${log% }" >>"$FAKE_LOG" ;;
+esac
+SH
+  chmod +x "$SB/docker-stub"
+  [ "${1:-}" != installed ] || cp "$SB/docker-stub" "$SB/bin/docker"
+  # shellcheck disable=SC2016
+  fake_cmd sg 'echo "sg $*" >>"$SB/sg.log"
+[ "$1" = docker ] && [ "$2" = -c ] || exit 2
+id -nG builder | tr " " "\n" | grep -qx docker || { echo "sg: failed" >&2; exit 1; }
+FAKE_SG=1 exec "'"$REAL_BASH"'" -c "$3"'
+}
+
+# fake_registry <reference> <64 hex>: the digest the registry holds for a tag.
+fake_registry() {
+  mkdir -p "$SB/registry"
+  printf '%s\n' "$2" >"$SB/registry/$(printf '%s' "$1" | tr '/:@' '___')"
 }

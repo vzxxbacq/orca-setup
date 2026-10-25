@@ -44,7 +44,7 @@ apply_ready() {
 
 @test "--plan lists every sudo command and nothing runs as root" {
   rm "$SB/bin/node" # a fresh device: Node.js comes from the NodeSource repository
-  run_setup --plan --role server
+  run_setup --plan --role client
   [ "$status" -eq 0 ]
   [[ "$output" == *'detected: unknown until Node.js is installed'* ]]
   [[ "$output" == *'sudo: present; --apply runs only the sudo commands listed below as root'* ]]
@@ -105,7 +105,7 @@ apply_ready() {
 
 @test "--apply needs sudo on Linux" {
   rm "$SB/bin/sudo"
-  run_setup --apply --role server
+  run_setup --apply --role client
   [ "$status" -eq 1 ]
   [[ "$output" == *'sudo is required for the apt steps'* ]]
   no_calls
@@ -158,8 +158,8 @@ apply_ready() {
   apply_ready
   for name in git-lfs gh rg jq tmux cmake pkg-config cc unzip; do fake_present "$name"; done
   echo ca-certificates >>"$FAKE_DPKG"
-  printf '{"environments":[{"name":"control"}]}\n' >"$ORCA_USER_DATA/orca-environments.json"
-  run_setup --apply --role server --pairing-address 203.0.113.10
+  printf '[{"scope":"runtime","name":"laptop","lastSeenAt":%s000}]\n' "$(date +%s)" >"$ORCA_USER_DATA/orca-devices.json"
+  run_setup --apply --role client
   [ "$status" -eq 1 ]
   [[ "$output" == *'PRESENT git'* ]]
   [[ "$output" == *'already holds the other pairing role'* ]]

@@ -57,3 +57,6 @@ poppler	pdftotext	media	brew:poppler	apt:poppler-utils
 ffmpeg	ffmpeg	media	brew:ffmpeg	apt:ffmpeg
 sevenzip	7zz|7z	media	brew:sevenzip	apt:p7zip-full
 marksman	marksman	media	brew:marksman	github-release:artempyanykh/marksman:marksman-linux-x64:marksman
+# The Orca server image (docker/Dockerfile) installs the baseline, the media, android and agent-gemini modules and the
+# "image" rows. Xvfb gives agents a display for computer-use and browsers; the Orca .deb depends on it today.
+xvfb	Xvfb	image	-	apt:xvfb
