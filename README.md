@@ -1,8 +1,9 @@
 # orca-setup — PLAN
 
-> Status: **all phases implemented (P0–P4)**: macOS parity, the Linux baseline, Orca on Linux, auth and optional
-> modules on Linux, and remote provisioning from a client. Real-device acceptance of P2's pairing, P3's interactive
-> logins and P4's remote provisioning is **pending**; the checklist in §6.6 runs all of it in one session.
+> Status: **P0–P4 implemented**: macOS parity, the Linux baseline, Orca on Linux, auth and optional modules on Linux,
+> and remote provisioning from a client. **P5 (planned, §6.7)** moves the Linux server into a Docker container with
+> its work and data directories mounted from the host; the native Linux server path is removed by P5. Real-device
+> acceptance is **pending**; the checklist in §6.6 runs all of it in one session (P5 rewrites it).
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -526,6 +527,7 @@ code is the device's missing count for `--check` and `--apply` (capped at 99; 0 
 | **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | accepted on CI (2026-10-24): containers install the `.deb` as a client; the runner VM runs the server unit with linger, reaches the runtime, re-runs as a no-op and counts only interactive logins. **Pending**: a real Linux x86_64 machine paired from a laptop client with `orca environment add`, then `worktree create --agent codex` remotely |
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | accepted on CI (2026-10-24) for everything that can run unattended: every Linux module has `--plan` output covered by bats, and `--apply` twice is a no-op the second time in ubuntu:24.04 / debian:12 containers (Docker Engine fresh install, media, android, gemini; `--power` and `--apple` skipped) and on the runner VM (`--power` masks the targets, the preinstalled Docker is left alone). **Pending**: the interactive logins (`--auth-gh` device code, `--auth-agy`, `--auth-linear`) on a real headless server; CI tests them with fakes only |
 | **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements (`--check --json`, Orca's installed vs latest version) | implemented and covered by bats against a fake Orca server (2026-10-24); `--gpu` and `--check --json` also run in the Linux CI jobs. **Pending**: a laptop client provisioning a real Linux x86_64 server from "paired" to "all green except interactive auth" with `remote/provision.sh --apply` (§6.6) |
+| **P5 Linux server in Docker** | the Linux server runs Orca and every agent in a container from `ghcr.io/vzxxbacq/orca-server`; the host gets only Docker Engine; work and data directories are bind-mounted at the same paths; the native server path (systemd unit, linger, host agents and `.deb` on a server) is removed; Linux clients unchanged (§6.7) | CI builds the image and, on the runner VM, `--apply --role server` twice with it (second run a no-op), the runtime is reachable through the container, no pairing URL in any output or container log, mounted data survives a container re-create with the host user's ownership; pushes to `main` publish the image with provenance. Real-device acceptance per the rewritten §6.6 |
 
 ### 6.1 P0 port notes (differences from setup-mini.sh)
 
@@ -611,6 +613,78 @@ Debian 12) as the new server; nothing here is covered by CI.
 6. **P2, remote work**: `orca worktree create --environment <server> --project <x> --agent codex ...` from the laptop;
    also whether `computer-use` can drive an app under Xvfb on the headless server.
 7. **Done when** `remote/provision.sh --environment <server> --check` exits 0.
+
+### 6.7 P5 plan: Linux server in Docker (decided 2026-10-26)
+
+Replaces the native Linux server (§3.3.1, §3.3.2) with a container. Linux clients and macOS are unchanged.
+
+**Host.** `./setup.sh --apply --role server --pairing-address <address> [--workdir <abs dir>]` on Linux:
+
+- installs Docker Engine through the existing verified apt path (§3.5 `--containers`, key fingerprint
+  `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`) and adds the user to the `docker` group (root-equivalent;
+  `--plan` and the README say so). A working existing Docker (CLI, reachable daemon, compose plugin) is used as it
+  is (preserve existing installs); Podman or a broken Docker is refused with the reason.
+- installs nothing else on the host: no Node.js, agents or Orca `.deb` for a server. `--power` and `--gpu` still run
+  on the host. `--containers` on a Linux server is part of the baseline.
+- creates the mounted directories (owned by the user), renders `docker/compose.yaml` into
+  `~/.config/orca-setup/docker/` (`$XDG_CONFIG_HOME` honoured) and starts the container. The systemd user unit,
+  linger, `lib/orca-serve.sh`, `orca/systemd/` and the unit's environment file are removed.
+
+**Container.**
+
+- `docker compose`, `network_mode: host` (port 6768 and the pairing address need no mapping),
+  `restart: unless-stopped` (Docker brings it back after a reboot), `init: true`; the command is
+  `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`.
+- runs as the host user's UID:GID with `HOME` set to the host user's home path; no `sudo` and no Docker inside.
+- read-only root filesystem with a tmpfs `/tmp`; the rest of the container's `HOME` is a dedicated host directory
+  (`~/.local/share/orca-setup/home`, `$XDG_DATA_HOME` honoured), so a write outside the mounts fails or persists
+  instead of vanishing on re-create, and the host's real home is reached only through the mounts below.
+- terminal resource limits, if wanted, become container limits from the local overlay
+  (`manifest/local/`), replacing the unit's `ORCA_TERMINAL_*` cgroup settings.
+
+**Mounts** (same absolute path on the host and in the container; the list lives in `manifest/`):
+
+| Host path | Contents |
+|---|---|
+| `~/orca` (`--workdir`) | `projects/` and `workspaces/`; Orca's workspace directory setting points here |
+| `~/.orca` | Orca user data: pairings, device registry, sealed integration credentials |
+| agent state: `~/.codex`, `~/.claude` (+ its top-level state file), `~/.config/gh`, `~/.gemini` and the other agents' directories | logins and configuration survive image upgrades |
+
+**Image.** `ghcr.io/vzxxbacq/orca-server`, built from `docker/Dockerfile`:
+
+- base image pinned by digest; the baseline tools and every agent come from `manifest/` through the existing
+  `lib/` install code (no package list in the Dockerfile), installed under a fixed system prefix rather than a
+  user's home; the Orca `.deb` keeps its digest and control-field checks (§3.3.1); also Xvfb, the `--media` tools,
+  gemini and adb, so `--media`, `--android` and `--agent-gemini` are built in on a Linux server; a copy of this
+  repository's scripts at `/opt/orca-setup` for in-container checks and logins.
+- CI builds it on every PR (no push) and, on pushes to `main`, publishes `sha-<commit>` and `main` with a build
+  provenance attestation; actions pinned by commit. The package must be made public once in GitHub's settings.
+- `--apply` pulls `main` on first install and records the digest it started in
+  `~/.config/orca-setup/docker/image.lock`; re-runs keep that digest (no upgrades). `--upgrade-image` pulls the
+  current `main` and re-creates the container; `--check` reports the running digest and whether a newer one exists.
+- organization-specific tools: an optional `manifest/local/Dockerfile` (`FROM` the published image) is built locally
+  and used instead.
+
+**Pairing, logins, check.**
+
+- Pairing: `docker compose stop`, then an interactive `docker compose run --rm` of `orca-ide serve --port 6768
+  --pairing-address <address>` in an SSH terminal; copy the link, Ctrl-C, `docker compose start`, `clear`. The
+  removed run container takes its log with it; `setup.sh` still never creates, captures or prints a link.
+- `./setup.sh --auth-*` on the host runs each login inside the container (`docker exec -it`); Orca skills and
+  settings are applied the same way. agy has no Secret Service in the container, so its sign-in is expected not to
+  persist; confirmed or refuted on real hardware (§9).
+- `--check` on the host: Docker, group membership, container state, image digest, mounts and ownership, then
+  `/opt/orca-setup/setup.sh --check --json` inside the container for tools, logins and Orca; one combined report.
+
+**`remote/provision.sh`.** An Orca terminal on a Docker server runs inside the container, without `sudo` or Docker,
+so it cannot change the host: for such a server provision.sh keeps `--plan` and `--check` and refuses `--apply`,
+pointing to the host install over SSH.
+
+**CI.** The client container matrix stays. The runner VM job builds the image locally and runs
+`--apply --role server --pairing-address 127.0.0.2` with it twice (second run a no-op), checks the runtime through
+`docker exec`, that no output, container log or journal holds a pairing URL, that a file written in a mounted
+directory survives `docker compose down && up` owned by the runner user, and that writing outside the mounts fails.
+A publish job runs only on pushes to `main`.
 
 ---
 
@@ -715,6 +789,7 @@ Debian 12) as the new server; nothing here is covered by CI.
 | P3 acceptance | accepted on CI; the interactive logins on a real headless server are pending (§6) |
 | Remote provisioning | `remote/provision.sh` on the client, through the public Orca CLI only (setup-clone or an existing checkout, an Orca terminal, `--check --json`); read-only by default; never handles passwords or runs `--auth-*` (§5.2) |
 | GPU module | `--gpu`: NVIDIA detection on Linux only, never installs; counts a missing driver next to an NVIDIA GPU (§3.5) |
+| Linux server form (2026-10-26) | Docker container from GHCR (`ghcr.io/vzxxbacq/orca-server`) with work, Orca data and agent login directories bind-mounted at the same paths; native server path removed; no Docker inside the container; Linux clients stay native (§6.7) |
 | P4 acceptance | covered by bats against a fake server; a laptop client provisioning a real Linux server is pending (§6.6). CI does not pair a second runtime, so no pairing secret exists in CI (§6.5) |
 
 **Open**
