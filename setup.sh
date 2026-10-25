@@ -173,7 +173,7 @@ if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported
   [ -z "$problem" ] || die "your home directory $HOME cannot be mounted into the Orca server container: $problem."
   problem=$(server_workdir_problem "$WORKDIR")
   [ -z "$problem" ] || die "--workdir $WORKDIR is refused: $problem."
-elif [ -n "$workdir" ] || [ "$upgrade_image" = yes ]; then
+elif [ "$SERVER_HOST" = no ] && { [ -n "$workdir" ] || [ "$upgrade_image" = yes ]; }; then
   [ "$PLATFORM" = debian ] || die '--workdir and --upgrade-image are for Linux servers (Orca in Docker); macOS runs the desktop app.'
   die '--workdir and --upgrade-image are for --role server on Linux; a client runs no Orca server.'
 fi

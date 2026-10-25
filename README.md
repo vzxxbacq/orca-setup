@@ -662,7 +662,7 @@ code is the device's missing count for `--check` and `--apply` (capped at 99; 0 
 | **P2 Orca on Linux** | install the headless runtime, `orca-ide` detection, systemd user unit + linger, skills, default settings, cross-platform `orca-rpc` | accepted on CI (2026-10-24): containers install the `.deb` as a client; the runner VM runs the server unit with linger, reaches the runtime, re-runs as a no-op and counts only interactive logins. **Pending**: a real Linux x86_64 machine paired from a laptop client with `orca environment add`, then `worktree create --agent codex` remotely |
 | **P3 Auth + optional modules** | headless adaptations for `auth/*` (xdg-open / print URL), Linux versions of `--power`, `--containers`, `--media`, `--android`, `--agent-gemini` | accepted on CI (2026-10-24) for everything that can run unattended: every Linux module has `--plan` output covered by bats, and `--apply` twice is a no-op the second time in ubuntu:24.04 / debian:12 containers (Docker Engine fresh install, media, android, gemini; `--power` and `--apple` skipped) and on the runner VM (`--power` masks the targets, the preinstalled Docker is left alone). **Pending**: the interactive logins (`--auth-gh` device code, `--auth-agy`, `--auth-linear`) on a real headless server; CI tests them with fakes only |
 | **P4 Remote provisioning + extensions** | `remote/provision.sh` (wrapping §5 steps 2–5), `--gpu` detection, audit enhancements (`--check --json`, Orca's installed vs latest version) | implemented and covered by bats against a fake Orca server (2026-10-24); `--gpu` and `--check --json` also run in the Linux CI jobs. **Pending**: a laptop client provisioning a real Linux x86_64 server from "paired" to "all green except interactive auth" with `remote/provision.sh --apply` (§6.6) |
-| **P5 Linux server in Docker** | the Linux server runs Orca and every agent in a container from `ghcr.io/vzxxbacq/orca-server`; the host gets only Docker Engine; work and data directories are bind-mounted at the same paths; the native server path (systemd unit, linger, host agents and `.deb` on a server) is removed; Linux clients unchanged (§6.7) | CI builds the image and, on the runner VM, `--apply --role server` twice with it (second run a no-op), the runtime is reachable through the container, no pairing URL in any output or container log, mounted data survives a container re-create with the host user's ownership; pushes to `main` publish the image with provenance. Real-device acceptance per the rewritten §6.6 |
+| **P5 Linux server in Docker** | the Linux server runs Orca and every agent in a container from `ghcr.io/vzxxbacq/orca-server`; the host gets only Docker Engine; work and data directories are bind-mounted at the same paths; the native server path (systemd unit, linger, host agents and `.deb` on a server) is removed; Linux clients unchanged (§6.7) | implemented and accepted on CI (2026-10-26): every PR builds the image, and the runner VM, with its preinstalled Docker used as it is, runs `--apply --role server` twice with it from a local registry (the second run a no-op), reaches the runtime through `docker exec`, finds no pairing URL in any output, status reply or container log, keeps mounted data across `docker compose down && up` owned by the runner user, refuses writes outside the mounts, counts only the two logins, and moves to a newer image with `--upgrade-image`; pushes to `main` publish the image with a provenance attestation. **Pending**: everything in §6.6 |
 
 ### 6.1 P0 port notes (differences from setup-mini.sh)
 
@@ -688,8 +688,8 @@ code is the device's missing count for `--check` and `--apply` (capped at 99; 0 
 
 - The Orca `.deb` is a baseline row (`orca-deb:stablyai/orca:orca-ide`), installed last and only when `orca-ide` is
   missing; existing installs are never upgraded (§3.3.1).
-- `--role server` adds linger and the `orca-serve` user unit (§3.3.2) and requires `--pairing-address`; `--role client`
-  installs Orca only. Skills and settings follow on both, as on macOS.
+- `--role server` added linger and the `orca-serve` user unit (P5 replaced both with the container, §6.7) and requires
+  `--pairing-address`; `--role client` installs Orca only. Skills and settings follow on both, as on macOS.
 - `orca/orca-rpc.sh` and `orca/role.sh` find the `.deb` install under `/opt/Orca` (`ORCA_APP_PATH` overrides).
 - `--check` counts the Linux Orca items by role (§3.6); the P1 notice is gone.
 - `--auth-codex` and `--auth-claude` work on Linux (`orca-ide account add` on the server); agy and Linear followed in P3.
@@ -724,34 +724,47 @@ code is the device's missing count for `--check` and `--apply` (capped at 99; 0 
   `project setup-clone` accepts the project id `github:vzxxbacq/orca-setup` for a fresh device, the `terminal read`
   cursor semantics for a partial last line (a sudo prompt has no newline), and the terminal `status` values.
 
-### 6.6 Pending real-device acceptance (P2, P3, P4)
+### 6.6 Pending real-device acceptance (P2–P5)
 
 Run in one session with a laptop as the control machine (client) and a real Linux x86_64 machine (Ubuntu 24.04 or
-Debian 12) as the new server; nothing here is covered by CI.
+Debian 12) as the new server; nothing here is covered by CI, and no pairing secret ever leaves the two machines.
 
-1. **P2, server install** (in an SSH session on the server): clone the repository, then
-   `./setup.sh --apply --role server --pairing-address <private address>`; `./setup.sh --check` counts only the GitHub
-   login and the Orca Codex account.
-2. **P2, pairing**: create a link with the unit stopped (§3.3.2), save it on the laptop with
-   `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on the server, and
-   check `orca status --environment <server>` on the laptop. Confirm the journal holds no pairing URL.
-3. **P4, provisioning**: on the laptop, `remote/provision.sh --environment <server>` (plan only), then
-   `remote/provision.sh --environment <server> --apply --pairing-address <private address> --path <checkout from 1>`
-   (or `--destination <dir>` on a server set up without step 1). Expect the existing checkout to be verified, a sudo
-   hand-off message if sudo asks, only `PRESENT` lines from `--apply`, and an exit code equal to the pending logins.
-   Also try `--check`, `--gpu` on a machine with an NVIDIA GPU, and confirm that provision.sh refuses on the server
-   itself.
-4. **P3, logins** (in the Orca terminal provision.sh left open, or over SSH): `./setup.sh --auth-gh` (device code),
-   `--auth-codex`, `--auth-claude`, `--auth-linear` (into the server's Orca), and `--auth-agy`; then check whether
-   agy's sign-in survives a new SSH login without a desktop keyring (§9, open question 1).
-5. **P3, modules on hardware**: `--power` (sleep targets masked; the BIOS setting by hand) and `--containers`.
-6. **P2, remote work**: `orca worktree create --environment <server> --project <x> --agent codex ...` from the laptop;
-   also whether `computer-use` can drive an app under Xvfb on the headless server.
-7. **Done when** `remote/provision.sh --environment <server> --check` exits 0.
+0. **The image** (once, after the first publish from `main`): make the package `ghcr.io/vzxxbacq/orca-server` public
+   in GitHub's package settings, then check it on the laptop:
+   `gh attestation verify oci://ghcr.io/vzxxbacq/orca-server:main --repo vzxxbacq/orca-setup`.
+1. **P5, host install** (an SSH session on the server): `git clone https://github.com/vzxxbacq/orca-setup
+   ~/orca/projects/orca-setup`, then `./setup.sh --plan --role server --pairing-address <private address>` and the
+   same with `--apply`. Expect Docker Engine from Docker's repository (or an existing Docker kept as it is), the
+   `sudo usermod` step and the `sg docker` note, the image pulled and its digest locked, the container running. A
+   second `--apply` prints only `PRESENT` lines; `./setup.sh --check` counts only the GitHub login and the Orca Codex
+   account. After `sudo reboot` and a new login the container is back (`docker ps`), `id` lists `docker`, and
+   `--check` is unchanged.
+2. **P2, pairing**: create a link with the container stopped (§3.3.2), save it on the laptop with
+   `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on the server, and check
+   `orca status --environment <server>` on the laptop. Confirm `docker logs orca-server` holds no pairing URL.
+3. **P4, provisioning**: on the laptop, `remote/provision.sh --environment <server>` (plan only; it recognises the
+   Docker server), `remote/provision.sh --environment <server> --apply --path ~/orca/projects/orca-setup` (registers
+   the checkout, then refuses with the pointer to the host), and `remote/provision.sh --environment <server> --check`
+   (exit code = the container's pending logins). Also check that provision.sh refuses on the server itself, and run
+   `./setup.sh --check --gpu` on a machine with an NVIDIA GPU.
+4. **P3 and P5, logins** (SSH on the host): `./setup.sh --auth-gh` (device code), `--auth-codex`, `--auth-claude`,
+   `--auth-linear` (into the server's Orca) and `--auth-agy`, each inside the container; then check that they survive
+   `docker compose down && docker compose up --detach` (in `~/.config/orca-setup/docker`), and whether agy's sign-in
+   survives at all without a Secret Service (§9, open question 1).
+5. **P3, modules on hardware**: `--power` on the host (sleep targets masked; the BIOS setting by hand).
+6. **P2 and P5, remote work**: `orca worktree create --environment <server> --project <x> --agent codex ...` from the
+   laptop; the worktree appears under `~/orca/workspaces` on the host, owned by the user, and the agent finds its
+   login. Also whether `computer-use` can drive an app under Xvfb in the container.
+7. **P5, upgrade**: once `main` has a newer image, `./setup.sh --check` reports `Newest image: newer one available`,
+   and `./setup.sh --apply --role server --pairing-address <private address> --upgrade-image` re-creates the
+   container with pairings, logins and worktrees intact.
+8. **Done when** `./setup.sh --check` on the host and `remote/provision.sh --environment <server> --check` on the
+   laptop both exit 0.
 
-### 6.7 P5 plan: Linux server in Docker (decided 2026-10-26)
+### 6.7 P5: Linux server in Docker (decided and implemented 2026-10-26)
 
-Replaces the native Linux server (§3.3.1, §3.3.2) with a container. Linux clients and macOS are unchanged.
+Replaces the native Linux server (§3.3.1, §3.3.2) with a container. Linux clients and macOS are unchanged. The plan
+below is as decided; how it was built, and where it differs, follows at the end of this section.
 
 **Host.** `./setup.sh --apply --role server --pairing-address <address> [--workdir <abs dir>]` on Linux:
 
@@ -821,6 +834,50 @@ pointing to the host install over SSH.
 directory survives `docker compose down && up` owned by the runner user, and that writing outside the mounts fails.
 A publish job runs only on pushes to `main`.
 
+**Implementation notes and deviations.**
+
+- *Where things live.* `lib/docker-host.sh` (Docker Engine, the group, `sg docker`), `lib/orca-server.sh` (address,
+  workdir, mounts, `compose.yaml`, `image.lock`, the container, `--check`, the logins), `docker/` (`Dockerfile`,
+  `build.sh`, `entrypoint.sh`, the `compose.yaml` template), `manifest/server-host.tsv`, `server-mounts.tsv` and
+  `server-limits.env`. The manifest row helpers moved from `setup.sh` to `lib/rows.sh` so the image build reuses
+  them; Linux client and macOS output is unchanged, except one line of the role-less Linux plan, which named the
+  removed unit and now says `Orca server: --role server --pairing-address <ip-or-host> runs it in Docker instead`.
+- *Image layout.* The tools under `/opt/orca-agents` keep the user-level layout (`.local/bin`, `.grok/bin`), because
+  the same code installs them (`npm --prefix ~/.local`, the official installers, uv) with the prefix as `HOME` during
+  the build. Xvfb and `libnss-extrausers` are `image` rows of `manifest/baseline.tsv`.
+- *The container's user.* The image cannot know the host UID and its root filesystem is read-only, so
+  `libnss-extrausers` also reads `/var/lib/extrausers`, a link to the container's `/tmp`, where the entry point writes
+  the user's entry (git, ssh and Node.js's `os.userInfo()` need one); the base image's `ubuntu` user (UID 1000) is
+  removed. Beyond the plan the container also drops every capability and sets `no-new-privileges`.
+- *Workspace directory.* Not written by `setup.sh`: upstream offers no RPC or CLI for a headless host's
+  `workspaceDir`, and its default is `~/orca/workspaces` (§3.3.2). With the default `--workdir` that is exactly
+  `<workdir>/workspaces`. **Deviation**: with another `--workdir`, Orca's paths read `~/orca/workspaces/...` (a link to
+  the workdir in the container's home), not the same path as on the host.
+- *`~/.claude.json`.* `CLAUDE_CONFIG_DIR=~/.claude` moves it into the mounted `~/.claude` (§3.3.2); no single file
+  is mounted.
+- *Mounts* (`manifest/server-mounts.tsv`): `~/orca` (`--workdir`), `~/.orca`, `~/.codex`, `~/.claude`, `~/.config/gh`,
+  `~/.gemini`, `~/.antigravity`, `~/.grok`, `~/.dsh`, `~/.dsh-tui`, `~/.pi`, `~/.omp`; the container's home
+  `~/.local/share/orca-setup/home` keeps everything else (`~/.gitconfig`, `~/.agents/skills`, caches).
+- *Role check.* It runs in a throwaway, read-only `docker run` of the image before the container starts, because the
+  host has no Node.js; the `--apply` inside the container then skips it (`ORCA_SETUP_ROLE_CHECKED=1`).
+- *Image lock.* `image.lock` records `source=` (the tag pulled) and `image=` (the digest); a locked image missing from
+  the host is pulled by digest. `manifest/local/Dockerfile` is built with the locked image as `ORCA_SERVER_IMAGE`
+  and tagged by a checksum of its directory and base (`local=` in the lock). `ORCA_SETUP_IMAGE` must name a pullable
+  image; CI serves the image it built from a local registry, so the PR job exercises the same pull and digest path.
+- *`--check` newest digest* comes from `docker buildx imagetools inspect` (registry only, nothing pulled) and is
+  `unknown` without buildx. The JSON report gained a `server` object and reports the host as `device`.
+- *`remote/provision.sh`* recognises a Docker server from its terminal (`ORCA_SETUP_CONTAINER`,
+  `/etc/orca-server-image`; §5.2). **Deviation**: on a device without a checkout, `--apply` still makes one (clone or
+  registration) before it refuses, because a remote terminal can only open in a checkout.
+- *Limits* are whole-container Compose options (`mem_limit`, `memswap_limit`, `pids_limit`, `cpus`), not the unit's
+  per-terminal `ORCA_TERMINAL_*` limits, which need systemd.
+- *Publish job.* `actions/attest-build-provenance` runs with `create-storage-record: false`: artifact storage records
+  exist only for organization-owned repositories (and would need `artifact-metadata: write`). The job has
+  `contents: read` besides the three write permissions, for the checkout.
+- *Not covered by CI*: pairing, the logins, a pull from GHCR (CI pulls from its local registry), a reboot, and a host
+  without Docker (bats covers that install path against fakes; the client containers install Docker Engine for real).
+- A pre-P5 native unit (`orca-serve.service` with orca-setup's marker) stops `--apply --role server` until removed.
+
 ---
 
 ## 7. Test strategy
@@ -837,15 +894,21 @@ A publish job runs only on pushes to `main`.
     `pdftotext`, `ffmpeg`, `7z`, `adb`, `gemini` and `~/.local/bin/marksman` must run, and `--power` / `--apple` must
     be skipped; a login shell must
     find the user-level tools and `orca-ide`, the `.deb` must be installed and `orca-ide` must run, the skills must be
-    installed, no unit may be written, the rendered unit must pass `systemd-analyze verify`, and `--check` must count
-    only the interactive GitHub login;
-  - `server` directly on GitHub's Ubuntu 24.04 runner VM (systemd), as the runner user:
-    `--apply --role server --pairing-address 127.0.0.2 --power --containers` (test-only override, §3.3.2) twice; the
-    sleep targets must be masked, the runner's preinstalled Docker (packages, apt sources, group) must be unchanged
-    and `--containers` skipped, the unit must be enabled
-    and active, linger on, the unit must pass `systemd-analyze --user verify`, `orca-ide status --json` must report the
-    runtime reachable, neither the setup output, the status reply nor the unit's journal may contain a pairing URL,
-    and `--check` must count only the GitHub login and the Orca Codex account.
+    installed, no server container may be set up, and `--check` must count only the interactive GitHub login;
+  - `server` directly on GitHub's Ubuntu 24.04 runner VM (systemd), as the runner user, with the image built from the
+    commit (`docker/Dockerfile`) and pushed to a local registry (`registry:3`, pinned by digest) that
+    `ORCA_SETUP_IMAGE` names: `--apply --role server --pairing-address 127.0.0.2 --power --containers --gpu`
+    (test-only override, §3.3.2) twice. The second run must run no step and leave the packages, apt sources,
+    `compose.yaml`, `image.lock` and the container itself unchanged; the runner's preinstalled Docker (packages, apt
+    sources, group) must be used as it is and stay unchanged; the container must run on the host network with a
+    read-only root filesystem, `restart: unless-stopped` and an init, as the runner's UID:GID with `HOME` at the
+    runner's home path, without `sudo` or `docker`, and with every baseline tool, agent and image tool on its `PATH`;
+    `orca-ide status --json` inside it must report the runtime reachable; neither the setup output, the status reply
+    nor `docker logs` may contain a pairing URL; a file written in `~/orca/projects` (and one in the container's home)
+    must survive `docker compose down && up` owned by the runner user, and writes to `/opt`, `/etc`, `/usr/local` and
+    `/` must fail; the sleep targets must be masked; `--check` must count only the GitHub login and the Orca Codex
+    account; and after a newer image is pushed to the same tag, a plain re-run must keep the locked digest while
+    `--upgrade-image` locks the new one and re-creates the container with the data intact.
   Pairing from another machine and the interactive logins are verified on real hardware (§6). In bats, every
   module's plan, the key fingerprint and release digest checks, the skip paths, headless detection and the auth
   modes run against fakes; the Linear key is typed on a pseudo-terminal (`tests/bats/pty.py`, only once echo is
@@ -861,12 +924,23 @@ A publish job runs only on pushes to `main`.
 - **`--gpu`** (`tests/bats/gpu.bats`) runs against a fake sysfs tree, `/proc`, `lspci`, `nvidia-smi` and `nvcc`;
   **`--check --json`** (`tests/bats/check-json.bats`) checks the schema, the exit code, the Orca version report and,
   with seeded secrets, that no credential value appears.
+- **Linux server in Docker** (`tests/bats/server-docker.bats`) runs against a fake Docker CLI and daemon, a fake
+  registry and `sg`, whose `exec` and `run` run the in-container `setup.sh` and `role.sh` in the sandbox: the server
+  `--plan` snapshot, Docker Engine's fresh install with the group and `sg`, an existing Docker used as it is, Podman
+  and broken Docker refused, the rendered `compose.yaml` (UID:GID, home, host network, read-only, tmpfs, mounts at the
+  same path, limits), `--workdir`, the image lock and `--upgrade-image`, the local Dockerfile, the role check before
+  the start, the logins through `docker exec`, the combined `--check` (text and JSON, with and without a running
+  container), and `setup.sh` inside the container; no output may carry the fake pairing URL.
 - **CI**: the same workflow runs shellcheck, `node --check` and bats on `ubuntu-latest` and `macos-latest`. The Linux
   jobs also pass `--gpu` (the runners have no NVIDIA GPU) and check that `--check --json` reports the same missing
-  count as `--check`. Remote provisioning is not run end to end in CI (§6.5).
+  count as `--check`. Remote provisioning is not run end to end in CI (§6.5). On pushes to `main` only, a publish job
+  builds the image again with `docker/build-push-action`, pushes `ghcr.io/vzxxbacq/orca-server:main` and
+  `:sha-<commit>`, and attests its build provenance (`actions/attest-build-provenance`); every action is pinned by
+  commit, and only that job has `packages`, `id-token` and `attestations` write permissions.
 - **macOS regression**: on an already provisioned Mac run only `--plan` / `--check` (no re-installs).
 - **Security regression**: grep the audit output to ensure no token/key-shaped strings; CI fails on host names, private IPs or internal URLs in tracked files.
-  The bats fake of `orca-ide status` carries a pairing URL, and every Linux Orca test asserts it never reaches the output.
+  The bats fake of `orca-ide status` carries a pairing URL, and every Linux Orca test (the server's included, whose
+  status replies pass through the fake container) asserts it never reaches the output.
 
 ---
 
@@ -877,12 +951,15 @@ A publish job runs only on pushes to `main`.
 | `orca-rpc.cjs` depends on Orca internals (`out/cli/runtime-client.js`) and RPC method names (`settings.update`, `accounts.list`, `linear.status`, `files.writeBase64`), which may change between versions | use the public CLI wherever possible; keep all RPC calls under `orca/`; `--check` fails loudly instead of silently when a probe fails |
 | On Linux, `orca` collides with the GNOME screen reader | `detect.sh` resolves the CLI name in one place; scripts must never hardcode `orca` |
 | Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported (`computer-use` has an upstream Linux helper and stays installed, §3.3) |
-| A pairing URL leaks through logs or scrollback | the unit runs with `--no-pairing`; `setup.sh` never asks for an offer; the user creates links in an interactive terminal (§3.3.2); tests assert no pairing URL in any output or journal |
+| A pairing URL leaks through logs or scrollback | the server container runs with `--no-pairing`; `setup.sh` never asks for an offer; the user creates links in an interactive, removed `docker compose run --rm` (§3.3.2); tests assert no pairing URL in any output, status reply or container log |
 | The `.deb` download is tampered with | GitHub's per-asset sha256 digest and the package's control fields are checked before `apt-get` sees the file; no digest, no install (§3.3.1) |
 | Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine (Linear; agy prints its own over SSH) |
 | agy cannot keep its sign-in on a headless server (no unlocked Secret Service keyring) | documented in §3.4; `--auth-agy` warns without SSH or D-Bus; `setup.sh` never handles keyring passwords; verified on real hardware (§6) |
-| `--containers` replaces or upgrades a Docker or Podman someone installed another way | skipped when a conflicting package (`manifest/apt-conflicts.tsv`) or a foreign `docker`/`podman` exists; CI checks the runner's preinstalled Docker stays unchanged |
-| The docker group is root-equivalent | only added by the explicit `--containers` module; `--plan` and the README say so |
+| `--containers` or a Linux server replaces or upgrades a Docker or Podman someone installed another way | `--containers` is skipped when a conflicting package (`manifest/apt-conflicts.tsv`) or a foreign `docker`/`podman` exists; a server uses a working foreign Docker as it is and refuses Podman or a broken Docker; CI checks the runner's preinstalled Docker stays unchanged |
+| The docker group is root-equivalent | only added by the explicit `--containers` module, or by `--apply --role server`, which needs Docker; `--plan` and the README say so |
+| The Orca server image is tampered with, or changes under a running server | the base image is pinned by digest, its tools pass the same key and digest checks as on a client, the image is published only from `main` with a build provenance attestation (`gh attestation verify`), and a host runs the digest locked in `image.lock` until `--upgrade-image`. The image's agents are the latest releases at build time, as on a client |
+| A process in the server container reaches beyond its user | it runs as the user's UID:GID with every capability dropped, `no-new-privileges`, a read-only root filesystem, no `sudo` and no Docker socket; it still shares the host network and the mounted directories, which hold the user's logins |
+| Orca's workspace directory or other internals change upstream | `setup.sh` relies only on Orca's documented default (`~/orca/workspaces`) and never writes Orca's profile state; a different default shows up in `--plan` and in the real-device run (§6.6) |
 | GPG key management for third-party apt repos (NodeSource / gh / Docker) | use `/etc/apt/keyrings/` + `signed-by=`, and record key fingerprints in the manifest for verification (Docker's no longer appears in its current guide; the recorded one comes from its earlier guides, §3.5) |
 | A GitHub release binary (marksman) is tampered with | GitHub's per-asset sha256 digest is required before it is copied into `~/.local/bin`; no digest, no install |
 | No public CLI lists the runtime clients paired with a host, so `orca/role.sh` reads Orca's device registry file | read only scope/name/last-seen; never print tokens; fail closed (`ROLE unknown`) when the file does not parse or has an unexpected shape; covered by bats tests with fake registries; switch to a CLI once one exists |
@@ -903,7 +980,7 @@ A publish job runs only on pushes to `main`.
 | Repo hosting | public GitHub repository `vzxxbacq/orca-setup`, MIT license |
 | Organization-specific integrations | not in this repository; local overlay only (§3.7) |
 | Pairing role | chosen per device with `--role client\|server` (§5.1) |
-| Linux form factor | headless server first (`orca serve` + systemd user unit, driven remotely) |
+| Linux form factor | headless server first, driven remotely; since P5 it runs in the `orca-server` container (§6.7) |
 | Agent baseline | codex, claude, dsh, agy, pi, grok, omp; gemini is optional (not usable with personal accounts) |
 | Task source | opt-in (`--task-source linear`); not set by default |
 | Node on Linux | NodeSource 24.x apt repo |
@@ -913,9 +990,9 @@ A publish job runs only on pushes to `main`.
 | Network | not managed by `setup.sh`; the user provides the private route and passes the address to advertise |
 | Fedora/RHEL | not now; `pkg-fedora.sh` is kept as a placeholder |
 | Agent install source | npm whenever a package exists (§3.2); grok and agy use their official installers |
-| Orca on Linux | official `.deb` from GitHub releases, run as `orca-ide serve --supervise` under a systemd user unit (§3.3.1) |
+| Orca on Linux | official `.deb` from GitHub releases (§3.3.1): installed on a client; on a server inside the image, run as `orca-ide serve --supervise` in the container (§3.3.2; until P5 under a systemd user unit) |
 | Linux server address | `--pairing-address <ip-or-host>` is required for `--apply --role server`; loopback and wildcards are refused |
-| Pairing link on a Linux server | never handled by `setup.sh`; the unit runs with `--no-pairing` and the user runs `orca-ide serve` in a terminal while the unit is stopped (§3.3.2) |
+| Pairing link on a Linux server | never handled by `setup.sh`; the container runs with `--no-pairing` and the user runs `orca-ide serve` in an interactive `docker compose run --rm` while the container is stopped (§3.3.2) |
 | P2 acceptance | accepted on CI; pairing from a laptop client to a real Linux x86_64 machine is pending (§6) |
 | `computer-use` on Linux | installed: upstream ships a Linux AT-SPI helper; it needs a graphical session to drive apps (§3.3) |
 | agy sign-in on a headless host | `--auth-agy` runs agy, which prints a URL over SSH; keeping the session needs an unlocked Secret Service keyring, which `setup.sh` does not set up (§3.4) |
@@ -925,20 +1002,22 @@ A publish job runs only on pushes to `main`.
 | Remote provisioning | `remote/provision.sh` on the client, through the public Orca CLI only (setup-clone or an existing checkout, an Orca terminal, `--check --json`); read-only by default; never handles passwords or runs `--auth-*` (§5.2) |
 | GPU module | `--gpu`: NVIDIA detection on Linux only, never installs; counts a missing driver next to an NVIDIA GPU (§3.5) |
 | Linux server form (2026-10-26) | Docker container from GHCR (`ghcr.io/vzxxbacq/orca-server`) with work, Orca data and agent login directories bind-mounted at the same paths; native server path removed; no Docker inside the container; Linux clients stay native (§6.7) |
+| P5 implementation (2026-10-26) | image digest locked per host (`image.lock`, `--upgrade-image`); Claude's state file through `CLAUDE_CONFIG_DIR=~/.claude`; Orca's workspace directory left at its default (`~/orca/workspaces`); provision.sh recognises a Docker server from its terminal and refuses `--apply` there; accepted on CI, real-device acceptance pending (§6.6) |
 | P4 acceptance | covered by bats against a fake server; a laptop client provisioning a real Linux server is pending (§6.6). CI does not pair a second runtime, so no pairing secret exists in CI (§6.5) |
 
 **Open**
 
-1. agy's interactive sign-in on a real headless server: whether the session survives a new SSH login without a
-   desktop keyring (upstream issues #53, #950). If not, decide whether to document a keyring setup or the
-   `GEMINI_API_KEY` route (§3.4).
+1. agy's interactive sign-in on a real headless server, now inside the container, which has no Secret Service at all:
+   whether the session survives a new SSH login and a container re-create (upstream issues #53, #950). If not, decide
+   whether to document a keyring inside the image or the `GEMINI_API_KEY` route (§3.4).
 2. P3 real-device acceptance (pending): `--auth-gh` device code, `--auth-linear` into the server's Orca, and
    `--containers` / `--power` on real hardware.
-3. P2 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
-   `--apply --role server`, then `orca worktree create --environment <server> --agent codex` from the client; also
-   check whether `computer-use` can drive an app under Xvfb on a headless server.
-4. P4 real-device acceptance (pending): `remote/provision.sh --apply` from a laptop client to that server, including
-   the unverified CLI details listed in §6.5. All pending items are collected in §6.6.
+3. P2 and P5 real-device acceptance (pending): pair a laptop client with a real Linux x86_64 server set up by
+   `--apply --role server` (in Docker), then `orca worktree create --environment <server> --agent codex` from the
+   client; also check whether `computer-use` can drive an app under Xvfb in the container.
+4. P4 real-device acceptance (pending): `remote/provision.sh` from a laptop client to that server (`--plan`, the
+   refused `--apply`, `--check`), including the unverified CLI details listed in §6.5. All pending items are collected
+   in §6.6.
 
 ---
 

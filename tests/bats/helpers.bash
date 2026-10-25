@@ -290,8 +290,8 @@ case "$1" in
     ref=${!#}
     [ -r "$SB/docker/images/$(key "$ref")" ] || exit 1
     case " $* " in *RepoDigests*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
-  inspect)
-    [ -r "$SB/docker/container" ] || exit 1
+  container)
+    [ "$2" = inspect ] && [ -r "$SB/docker/container" ] || exit 1
     cat "$SB/docker/container" ;;
   compose)
     echo "${log% }" >>"$FAKE_LOG"

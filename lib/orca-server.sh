@@ -300,7 +300,7 @@ server_image_plan() {
 
 # server_container_state: "<status> <config label>" of the container; empty when there is none.
 server_container_state() {
-  dk inspect --format '{{.State.Status}} {{index .Config.Labels "org.orca-setup.config"}}' "$ORCA_SERVER_NAME" 2>/dev/null
+  dk container inspect --format '{{.State.Status}} {{index .Config.Labels "org.orca-setup.config"}}' "$ORCA_SERVER_NAME" 2>/dev/null
 }
 
 # The label the rendered compose.yaml asks for.

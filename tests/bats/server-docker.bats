@@ -26,6 +26,16 @@ setup() {
   fake_registry "$IMAGE:main" "$D1"
   COMPOSE=$HOME/.config/orca-setup/docker/compose.yaml
   LOCK=$HOME/.config/orca-setup/docker/image.lock
+  # No systemd unless a test boots the fake one (the machine running the tests may have it).
+  export ORCA_SETUP_SYSTEMD_RUN_DIR=$SB/no-systemd
+}
+
+# systemd as the host's init system: the fake systemctl reports units the fake sudo masked ($SB/masked) as masked.
+fake_systemd() {
+  mkdir -p "$SB/run-systemd"
+  export ORCA_SETUP_SYSTEMD_RUN_DIR=$SB/run-systemd
+  # shellcheck disable=SC2016 # the stub body expands when the stub runs
+  fake_cmd systemctl 'case "$1" in is-enabled) grep -qxF -- "$2" "$SB/masked" 2>/dev/null && { echo masked; exit 1; }; echo static ;; *) echo "systemctl $*" >>"$FAKE_LOG"; exit 1 ;; esac'
 }
 
 no_calls() { [ ! -s "$FAKE_LOG" ] || { cat "$FAKE_LOG"; return 1; }; }
@@ -436,11 +446,14 @@ only_present() {
 @test "--check combines the host's items with the container's report" {
   image_tools
   existing_docker
+  fake_systemd
   apply_server --power
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'+ sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target'* ]]
   fake_cmd gh 'exit 1' # not logged in
-  run_setup --check --role server --media
+  run_setup --check --role server --media --power
   no_secret
+  [[ "$output" == *'Sleep targets: masked'* ]]
   [[ "$output" == *'Docker: working (Engine 27.3.1, Compose 2.29.7)'* ]]
   [[ "$output" == *'docker group: member'* ]]
   [[ "$output" == *"Orca server image: locked ($IMAGE@sha256:$D1)"* ]]
