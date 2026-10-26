@@ -23,7 +23,7 @@ server_lock_file() { printf '%s/image.lock\n' "$(server_config_dir)"; }
 # The container's home directory on the host.
 server_home() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/home"; }
 # ORCA_SETUP_IMAGE replaces the published image for tests and CI only.
-server_image_source() { printf '%s\n' "${ORCA_SETUP_IMAGE:-$ORCA_SERVER_IMAGE}"; }
+server_image_source() { printf '%s\n' "${CONFIG_IMAGE:-${ORCA_SETUP_IMAGE:-$ORCA_SERVER_IMAGE}}"; }
 
 # tilde <path>: the path with $HOME shown as ~ (for messages only).
 # shellcheck disable=SC2088 # a literal ~ for display
@@ -202,6 +202,7 @@ server_publish_source() {
 # server_limit_lines: service options for the optional container limits, read from manifest/server-limits.env and
 # overridden key by key from manifest/local/server-limits.env. Unknown keys and malformed values stop the run.
 server_limit_lines() {
+  if [ -n "${CONFIG_FILE:-}" ]; then server_config_limit_lines; return; fi
   local base="$ORCA_SETUP_MANIFEST_DIR/server-limits.env" overlay="$ORCA_SETUP_MANIFEST_DIR/local/server-limits.env" key value
   [ -r "$overlay" ] || overlay=/dev/null
   while IFS='=' read -r key value; do
@@ -232,17 +233,51 @@ server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 
 # server_compose_render <image> <workdir> <pairing-address> <publish-address> <config>: the compose.yaml content.
 server_compose_render() {
-  local volumes limits path
+  local volumes limits path server_network executor_volumes='' network_dir='' policy_sum=''
+  local mode=${NETWORK_MODE:-direct} server_hostname server_environment='' auth_service='' auth_definition='' auth_volume=''
   volumes=$(server_volume "$(server_home)" "$HOME"
     while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")
     server_volume "$(server_overlay_dir)" "$ORCA_SERVER_ROOT/manifest/local" ro) || return 1
   limits=$(server_limit_lines) || return 1
+  if [ "$mode" = isolated ]; then
+    server_network_load || return 1
+    network_dir=$(server_network_dir)
+    volumes="$volumes
+$(server_volume "$network_dir/orca-resolv.conf" /etc/resolv.conf ro)"
+    executor_volumes=$(server_volume "${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/executor-home" "$HOME"
+      server_volume "$2" "$2"
+      server_volume "$network_dir/executor-resolv.conf" /etc/resolv.conf ro)
+    policy_sum=$(printf '%s\n' "$NET_PROXY_TYPE" "$NET_PROXY_ADDRESS" "$NET_PROXY_PORT" "$NET_DNS_ADDRESS" \
+      "$NET_DNS_TRANSPORT" "$NET_DNS_TLS_NAME" "$NET_EXECUTOR_DNS" "$NET_CONTROL_SUBNET" "$NET_RULES" "$NET_PROXY_AUTH_FILE" | \
+      cksum | awk '{ print $1 "-" $2 }')
+    if [ "${CONFIG_INLINE_AUTH:-no}" = yes ]; then
+      auth_volume=$'      - type: volume\n        source: orca_proxy_auth\n        target: /run/secrets\n        read_only: true'
+      auth_definition=$(printf 'volumes:\n  orca_proxy_auth:\n    external: true\n    name: "%s"' "$(server_config_secret_volume)")
+    elif [ -n "$NET_PROXY_AUTH_FILE" ]; then
+      auth_service=$'    secrets:\n      - orca_proxy_auth'
+      auth_definition=$(printf 'secrets:\n  orca_proxy_auth:\n    file: "%s"' "$NET_PROXY_AUTH_FILE")
+    fi
+    server_network=$(server_network_server_lines "$4")
+    server_hostname=''
+    server_environment=$(printf '      ORCA_EXECUTOR_HOST: "%s"\n' "$NET_EXECUTOR_IP"
+      printf '      %s: ""\n' HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy)
+  else
+    server_network=$(printf '    ports:\n      - "%s:%s:%s/tcp"' "$4" "$ORCA_SERVER_PORT" "$ORCA_SERVER_PORT")
+    server_hostname=$(printf '    hostname: "%s"' "$(uname -n)")
+  fi
   # Values go through ENVIRON: awk -v would interpret backslashes and cannot hold several lines everywhere.
   RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_PUBLISH_ADDRESS=$4 RENDER_CONFIG=$5 \
     RENDER_PORT=$ORCA_SERVER_PORT RENDER_HOSTNAME=$(uname -n) RENDER_UID=$(id -u) RENDER_GID=$(id -g) RENDER_HOME=$HOME \
-    RENDER_USER=$(id -un) RENDER_VOLUMES=$volumes RENDER_LIMITS=$limits awk '
+    RENDER_USER=$(id -un) RENDER_VOLUMES=$volumes RENDER_LIMITS=$limits RENDER_NETWORK_MODE=$mode \
+    RENDER_SERVER_NETWORK=$server_network RENDER_NETWORK_DIR=$network_dir RENDER_EXECUTOR_VOLUMES=$executor_volumes \
+    RENDER_CONTROL_SUBNET=${NET_CONTROL_SUBNET:-} RENDER_ORCA_IP=${NET_ORCA_IP:-} RENDER_EXECUTOR_IP=${NET_EXECUTOR_IP:-} \
+    RENDER_SERVER_HOSTNAME=$server_hostname RENDER_SERVER_ENVIRONMENT=$server_environment \
+    RENDER_PROXY_AUTH_SERVICE=$auth_service RENDER_PROXY_AUTH_DEFINITION=$auth_definition RENDER_PROXY_AUTH_VOLUME=$auth_volume \
+    RENDER_CONFIG_FILE=${CONFIG_FILE:-} \
+    RENDER_EXECUTOR_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/executor-home" RENDER_POLICY_SUM=$policy_sum awk '
     /^@VOLUMES@$/ { print ENVIRON["RENDER_VOLUMES"]; next }
     /^@LIMITS@$/ { if (ENVIRON["RENDER_LIMITS"] != "") print ENVIRON["RENDER_LIMITS"]; next }
+    /^@NETWORK_SERVICES@$/ { next }
     { line = $0
       out = ""
       while (match(line, /@[A-Z_]+@/)) {
@@ -250,7 +285,7 @@ server_compose_render() {
         line = substr(line, RSTART + RLENGTH)
       }
       print out line }
-  ' "$ORCA_SETUP_ROOT/docker/compose.yaml"
+  ' "$ORCA_SETUP_ROOT/docker/compose.yaml" <(if [ "$mode" = isolated ]; then cat "$ORCA_SETUP_ROOT/docker/compose-isolated.yaml"; fi)
 }
 
 # server_compose <image> <workdir> <pairing-address> <publish-address>: the compose.yaml content, labelled with a
@@ -339,6 +374,21 @@ server_image_apply() {
   local source locked base tag dir
   source=$(server_image_source)
   locked=$(server_lock_value image)
+  if [ "${CONFIG_IMAGE_SOURCE:-registry}" = local ]; then
+    if [ -n "$locked" ] && [ "$upgrade_image" != yes ] && [ "$(server_lock_value source)" = "local:$source" ]; then
+      dk image inspect "$locked" >/dev/null 2>&1 || die 'the locked local image is missing; load it again or explicitly use --upgrade-image.'
+      info "PRESENT local image $locked"
+    else
+      base=$(dk image inspect --format '{{.Id}}' "$source" 2>/dev/null) || die 'the configured local image is missing; build or docker load it first.'
+      [[ "$base" =~ ^sha256:[0-9a-f]{64}$ ]] || die 'the local image has no valid content ID.'
+      if [ "$base" != "$locked" ] || [ "$(server_lock_value source)" != "local:$source" ]; then
+        server_lock_write "local:$source" "$base"
+      fi
+      locked=$base
+    fi
+    SERVER_IMAGE=$locked
+    return 0
+  fi
   if [ -n "$locked" ] && [ "$upgrade_image" != yes ] && [ "$(server_lock_value source)" = "$source" ]; then
     if dk image inspect "$locked" >/dev/null 2>&1; then info "PRESENT image $locked"
     else
@@ -354,6 +404,7 @@ server_image_apply() {
     else server_lock_write "$source" "$base"; fi
   fi
   SERVER_IMAGE=$base
+  [ -z "${CONFIG_FILE:-}" ] || return 0
   [ -r "$(server_local_dockerfile)" ] || return 0
   tag=$(server_local_tag "$base")
   dir=$(dirname "$(server_local_dockerfile)")
@@ -372,6 +423,11 @@ server_image_plan() {
   source=$(server_image_source)
   locked=$(server_lock_value image)
   info 'Image (--apply):'
+  if [ "${CONFIG_IMAGE_SOURCE:-registry}" = local ]; then
+    info "  local    $source (must already exist in Docker; no registry or pull)"
+    info '           lock its content ID; --upgrade-image explicitly adopts the current local tag'
+    return 0
+  fi
   [ -z "${ORCA_SETUP_IMAGE:-}" ] || info "  source   $source (ORCA_SETUP_IMAGE: for tests and CI only)"
   if [ -n "$locked" ] && [ "$upgrade_image" != yes ] && [ "$(server_lock_value source)" = "$source" ]; then
     info "  present  $locked (locked in $(tilde "$(server_lock_file)"); --upgrade-image pulls the newest one)"
@@ -381,7 +437,7 @@ server_image_plan() {
     info "  pull     $source and lock its digest in $(tilde "$(server_lock_file)")"
     info '           re-runs keep the locked digest; only --upgrade-image pulls a newer one'
   fi
-  [ ! -r "$(server_local_dockerfile)" ] ||
+  [ -n "${CONFIG_FILE:-}" ] || [ ! -r "$(server_local_dockerfile)" ] ||
     info '  build    manifest/local/Dockerfile FROM that image (docker build), and run the result instead'
 }
 
@@ -389,7 +445,7 @@ server_image_plan() {
 
 # server_container_state: "<status> <config label>" of the container; empty when there is none.
 server_container_state() {
-  dk container inspect --format '{{.State.Status}} {{index .Config.Labels "org.orca-setup.config"}}' "$ORCA_SERVER_NAME" 2>/dev/null
+  dk container inspect --format '{{.State.Status}} {{index .Config.Labels "org.orca-setup.config"}}' "${1:-$ORCA_SERVER_NAME}" 2>/dev/null
 }
 
 # The label the rendered compose.yaml asks for.
@@ -476,7 +532,11 @@ server_container_apply() { # <workdir>
   local compose rendered state config arg waited=0 limit=${ORCA_SETUP_SERVE_WAIT:-120} args=()
   compose=$(server_compose_file)
   rendered=$(server_compose "$SERVER_IMAGE" "$1" "$pairing_address" "$PUBLISH_ADDRESS") || exit 1
-  config=$(printf '%s\n' "$rendered" | sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p')
+  config=$(printf '%s\n' "$rendered" | sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' | head -n 1)
+  if [ -f "$compose" ] && [ "$NETWORK_MODE" != "$NETWORK_PREVIOUS_MODE" ]; then
+    # Release the private published port before moving it between Orca and its gateway. Bind mounts are retained.
+    dk_step compose --file "$compose" down || die 'could not stop the previous network topology.'
+  fi
   if [ -f "$compose" ] && [ "$(cat "$compose")" = "$rendered" ]; then info "PRESENT $(tilde "$compose")"
   else
     info "+ write $(tilde "$compose")"
@@ -484,8 +544,21 @@ server_container_apply() { # <workdir>
     printf '%s\n' "$rendered" >"$compose"
   fi
   state=$(server_container_state) || state=''
-  if [ "$state" = "running $config" ]; then info "PRESENT container $ORCA_SERVER_NAME running"
-  else dk_step compose --file "$compose" up --detach || die "docker compose could not start $ORCA_SERVER_NAME."; fi
+  if [ "$state" = "running $config" ] && server_network_helpers_current "$config"; then
+    info "PRESENT container $ORCA_SERVER_NAME running"
+  else
+    if [ "$NETWORK_MODE" = isolated ]; then
+      # Applications must join the new donor namespaces when a gateway is replaced or restarted.
+      dk_step compose --file "$compose" up --detach --force-recreate --remove-orphans ||
+        die "could not start the isolated stack; check gateway logs and use --upgrade-image if the image predates isolation."
+    else
+      if [ "$NETWORK_PREVIOUS_MODE" = isolated ]; then
+        dk_step compose --file "$compose" up --detach --remove-orphans || die "docker compose could not start $ORCA_SERVER_NAME."
+      else
+        dk_step compose --file "$compose" up --detach || die "docker compose could not start $ORCA_SERVER_NAME."
+      fi
+    fi
+  fi
   until server_runtime_reachable; do
     [ "$waited" -lt "$limit" ] ||
       die "the Orca runtime in $ORCA_SERVER_NAME is not reachable ${limit}s after it started; see: docker logs $ORCA_SERVER_NAME"
@@ -535,6 +608,7 @@ server_plan() { # <workdir>
   docker_plan
   server_dirs_plan "$1"
   server_image_plan
+  server_network_plan
   info 'Container (--apply):'
   info '  check    the pairing role, read-only inside the image, before the container starts'
   if [ -f "$(server_compose_file)" ]; then info "  render   $(tilde "$(server_compose_file)") (rewritten when it differs)"
@@ -551,6 +625,9 @@ server_plan() { # <workdir>
 
 server_apply() { # <workdir>
   local legacy name
+  if [ "$NETWORK_MODE" = isolated ]; then
+    server_network_load || die 'isolated networking requires a valid local network policy; nothing has been changed.'
+  fi
   [ -n "$pairing_address" ] ||
     die '--apply --role server on Linux requires --pairing-address <ip-or-host>, the private address clients dial (README section 3.3.2).'
   [ -n "$PUBLISH_ADDRESS" ] ||
@@ -565,6 +642,7 @@ server_apply() { # <workdir>
   server_overlay_apply
   server_image_apply
   server_role_check
+  server_network_apply
   server_container_apply "$1"
   for name in $modules; do
     case "$name" in
@@ -592,9 +670,11 @@ server_newest_digest() {
 # server_published: the container's network mode on the first line, then "<host ip>|<host port>|<port>/<protocol>"
 # for every port it publishes (a running container's actual bindings).
 server_published() {
+  local endpoint_container=$ORCA_SERVER_NAME
+  [ "$NETWORK_MODE" != isolated ] || endpoint_container=orca-gateway
   # shellcheck disable=SC2016 # a Go template, not shell expansions
   dk container inspect --format '{{.HostConfig.NetworkMode}}{{println}}{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}}|{{.HostPort}}|{{$port}}{{println}}{{end}}{{end}}' \
-    "$ORCA_SERVER_NAME" 2>/dev/null
+    "$endpoint_container" 2>/dev/null
 }
 
 # server_check_endpoint: where the running container publishes; anything but port 6768 on the publish address alone
@@ -630,8 +710,15 @@ server_check_host() {
   else
     report "locked ($locked)" 'Orca server image'
     newest=''
-    [ -z "$DOCKER_VIA" ] || newest=$(server_newest_digest "$(server_lock_value source)") || newest=''
-    if [ -z "$newest" ]; then report 'unknown (the registry did not answer, or docker buildx is missing; not counted)' 'Newest image'
+    if [ -n "$DOCKER_VIA" ]; then
+      case "$(server_lock_value source)" in
+        local:*) newest=$(dk image inspect --format '{{.Id}}' "$(server_lock_value source | cut -c 7-)" 2>/dev/null) || newest='' ;;
+        *) newest=$(server_newest_digest "$(server_lock_value source)") || newest='' ;;
+      esac
+    fi
+    if [ -z "$newest" ] && [[ "$(server_lock_value source)" = local:* ]]; then
+      report 'unknown (the local image tag is absent or Docker did not answer; not counted)' 'Newest image'
+    elif [ -z "$newest" ]; then report 'unknown (the registry did not answer, or docker buildx is missing; not counted)' 'Newest image'
     elif [ "$newest" = "${locked##*@}" ]; then report 'same as image.lock' 'Newest image'
     else report "newer one available ($newest; --apply --role server --upgrade-image switches; not counted)" 'Newest image'; fi
     SERVER_INFO+=("image"$'\t'"$locked" "newest"$'\t'"${newest:-unknown}")
@@ -650,6 +737,10 @@ server_check_host() {
   SERVER_ENDPOINT=none
   [ "$SERVER_CONTAINER" != running ] || server_check_endpoint
   SERVER_INFO+=("container"$'\t'"$SERVER_CONTAINER" "endpoint"$'\t'"$SERVER_ENDPOINT" "workdir"$'\t'"$1")
+  if [ "$NETWORK_MODE" = isolated ]; then
+    SERVER_INFO+=("network-mode"$'\t'isolated)
+    server_network_check
+  fi
   while IFS=$'\t' read -r path _; do
     if [ ! -e "$path" ]; then report MISSING "Mount $(tilde "$path")"
     elif [ ! -d "$path" ]; then report 'MISSING (not a directory)' "Mount $(tilde "$path")"

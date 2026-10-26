@@ -36,6 +36,8 @@ jobs:
         run: git ls-files '*.cjs' | xargs -n 1 node --check
       - name: bats
         run: bats --print-output-on-failure tests/bats
+      - name: Executor and DNS protocol tests
+        run: python3 -m unittest discover -s tests/python -v
 
   linux-integration:
     name: Linux client in a container (${{ matrix.image }})
@@ -91,6 +93,9 @@ jobs:
           env -i CI=true GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" HOME="$HOME" USER="$USER" \
             LOGNAME="$USER" SHELL=/bin/bash PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             ORCA_SETUP_IMAGE="$ORCA_SETUP_IMAGE" bash tests/integration/linux.sh server
+      - name: Isolated gateways and LAN-only execution (real packets)
+        shell: bash
+        run: bash tests/integration/network.sh
 
   publish:
     name: Publish ghcr.io/vzxxbacq/orca-server

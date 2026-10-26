@@ -62,3 +62,7 @@ marksman	marksman	media	brew:marksman	github-release:artempyanykh/marksman:marks
 # libnss-extrausers lets the container's user, whose UID the image cannot know, be looked up (docker/entrypoint.sh).
 xvfb	Xvfb	image	-	apt:xvfb
 nss-extrausers	-	image	-	apt:libnss-extrausers
+# Isolated-network sidecars use the same locked image; these tools never run with elevated rights in Orca itself.
+iptables	iptables	image	-	apt:iptables
+iproute2	ip	image	-	apt:iproute2
+redsocks	redsocks	image	-	apt:redsocks

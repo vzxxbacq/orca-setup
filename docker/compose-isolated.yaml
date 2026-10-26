@@ -1,0 +1,136 @@
+# Appended to the base template in isolated mode. No Docker socket, host networking or SS credentials.
+  orca-gateway:
+    image: "@IMAGE@"
+    pull_policy: never
+    container_name: orca-gateway
+    hostname: "@HOSTNAME@"
+    entrypoint: ["/opt/orca-setup/docker/gateway.sh", "orca"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["NET_ADMIN", "NET_BIND_SERVICE"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777"]
+    restart: unless-stopped
+    init: true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    ports:
+      - "@PUBLISH_ADDRESS@:@PORT@:@PORT@/tcp"
+    networks:
+      control:
+        ipv4_address: "@ORCA_IP@"
+      outbound: {}
+    labels:
+      org.orca-setup.config: "@CONFIG@"
+    volumes:
+      - type: bind
+        source: "@NETWORK_DIR@"
+        target: /etc/orca-network
+        read_only: true
+        bind:
+          create_host_path: false
+@PROXY_AUTH_VOLUME@
+@PROXY_AUTH_SERVICE@
+    healthcheck:
+      test: ["CMD", "/opt/orca-setup/docker/gateway.sh", "check"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  executor-gateway:
+    image: "@IMAGE@"
+    pull_policy: never
+    container_name: executor-gateway
+    entrypoint: ["/opt/orca-setup/docker/gateway.sh", "executor"]
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["NET_ADMIN"]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: ["/tmp:mode=1777"]
+    restart: unless-stopped
+    init: true
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: "1"
+      net.ipv6.conf.default.disable_ipv6: "1"
+    networks:
+      control:
+        ipv4_address: "@EXECUTOR_IP@"
+      outbound: {}
+    labels:
+      org.orca-setup.config: "@CONFIG@"
+    volumes:
+      - type: bind
+        source: "@NETWORK_DIR@"
+        target: /etc/orca-network
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: ["CMD", "/opt/orca-setup/docker/gateway.sh", "check"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  orca-executor:
+    image: "@IMAGE@"
+    pull_policy: never
+    container_name: orca-executor
+    network_mode: "service:executor-gateway"
+    depends_on:
+      executor-gateway:
+        condition: service_healthy
+        restart: true
+    entrypoint: ["/opt/orca-setup/docker/entrypoint.sh"]
+    command: ["python3", "/opt/orca-setup/docker/execution.py", "server"]
+    user: "@UID@:@GID@"
+    read_only: true
+    tmpfs: ["/tmp:exec,mode=1777"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 90s
+    environment:
+      HOME: "@HOME@"
+      USER: "@USER@"
+      LOGNAME: "@USER@"
+      PATH: "@HOME@/.local/bin:/opt/orca-agents/.local/bin:/opt/orca-agents/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ORCA_EXECUTOR_BIND: "@EXECUTOR_IP@"
+      ORCA_EXECUTOR_ROOT: "@WORKDIR@"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
+      NO_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
+      all_proxy: ""
+      no_proxy: ""
+    labels:
+      org.orca-setup.config: "@CONFIG@"
+    volumes:
+@EXECUTOR_VOLUMES@
+    healthcheck:
+      test: ["CMD", "python3", "/opt/orca-setup/docker/execution.py", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  control:
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: "@CONTROL_SUBNET@"
+  outbound:
+    enable_ipv6: false
+@PROXY_AUTH_DEFINITION@

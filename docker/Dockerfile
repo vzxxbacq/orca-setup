@@ -19,6 +19,7 @@ RUN ORCA_SETUP_IMAGE_BUILD=1 bash /opt/orca-setup/docker/build.sh
 
 # A copy of this repository's scripts for the checks and logins setup.sh runs inside the container.
 COPY . /opt/orca-setup
+RUN ln -s /opt/orca-setup/docker/orca-exec /usr/local/bin/orca-exec
 
 ENV ORCA_SETUP_CONTAINER=orca-server \
     PATH=/opt/orca-agents/.local/bin:/opt/orca-agents/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
