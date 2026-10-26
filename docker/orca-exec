@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Explicitly run a command in the LAN-only executor. No shell interpolation and no fallback to local execution.
+set -euo pipefail
+exec python3 /opt/orca-setup/docker/execution.py client "$@"

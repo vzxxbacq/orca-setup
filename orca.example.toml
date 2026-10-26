@@ -1,0 +1,48 @@
+# Copy to orca.toml, chmod 600, and edit on the Linux Docker host.
+# Documentation addresses below are placeholders; use addresses reachable from that host.
+# ./setup.sh --config orca.toml          # read-only plan
+# ./setup.sh --config orca.toml --apply
+
+[server]
+role = "server"
+pairing_address = "server.example.com"
+publish_address = "172.20.0.2" # Must exist on a host interface; never use a wildcard.
+workdir = "~/orca"
+image = "ghcr.io/vzxxbacq/orca-server:main"
+image_source = "registry"
+# For a prebuilt image already in Docker, set image_source = "local" and image to its tag.
+# Both sources are pinned; only --upgrade-image adopts a newer digest/content ID.
+# task_source = "linear"
+
+[network]
+mode = "isolated"
+control_subnet = "172.30.70.0/24" # Dedicated container bridge; avoid existing LAN/VPN routes.
+
+[proxy]
+type = "socks5" # socks5 or http-connect; an existing endpoint, not an SS URI.
+address = "192.0.2.20" # Numeric endpoint avoids DNS bootstrap; replace before --apply.
+port = 1080
+# Uncomment both fields for authenticated proxies. Keep the TOML caller-owned and mode 0600.
+# username = "replace-on-device"
+# password = "replace-on-device"
+# Alternatively, auth_file names an external root-owned mode-0600 JSON file; never combine both forms.
+
+[dns]
+address = "1.1.1.1"
+transport = "https"
+tls_name = "cloudflare-dns.com"
+
+[executor]
+# dns = "172.20.1.53" # Optional private DNS; TCP/UDP 53 are allowed only to this address.
+# No general Internet access. Add only the private services required by execution commands.
+[[executor.allow]]
+name = "internal-git"
+cidr = "172.20.1.10/32"
+protocol = "tcp"
+port = 443
+
+[limits]
+mem_limit = "16g"
+memswap_limit = "16g"
+pids_limit = 4096
+cpus = 4

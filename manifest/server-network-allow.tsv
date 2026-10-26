@@ -1,0 +1,3 @@
+# Executor direct access exceptions. Empty by default: no LAN or public outbound connections.
+# Columns (tab-separated): name, canonical private IPv4 CIDR, tcp|udp, single destination port.
+# Add device-specific rules in manifest/local/server-network-allow.tsv. Standard overlay merge rules apply.

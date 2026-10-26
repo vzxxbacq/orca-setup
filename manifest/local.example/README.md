@@ -14,6 +14,10 @@ cp -R manifest/local.example manifest/local
   as `manifest/server-mounts.tsv`.
 - `server-limits.env`: container limits for the Linux server (`--role server`); a key here replaces the same key in
   `manifest/server-limits.env`. Only the keys listed there are accepted.
+- `server-network.env`: existing HTTP CONNECT/SOCKS5 endpoint and DNS/control network settings, used only with
+  `--network-mode isolated`. Replace the documentation proxy address on the target device. No credentials allowed.
+- `server-network-allow.tsv`: explicit private IPv4 CIDR, protocol and port exceptions for the LAN-only executor;
+  empty until you add target-specific rules (README section 3.3.3).
 - `Dockerfile.example`: rename it to `Dockerfile` to build organization-specific tools on top of the Linux server's
   locked image; setup.sh then runs the result instead (README section 3.3.2). Without it nothing is built.
 

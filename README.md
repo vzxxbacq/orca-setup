@@ -5,6 +5,7 @@
 > and agent login directories mounted from the host; the native Linux server (systemd user unit) is gone. Since P5.1
 > the container's Orca port is published on one private host address only (`--publish-address`, §3.3.2). Real-device
 > acceptance is **pending**; the checklist in §6.6 runs all of it in one session.
+> Optional isolated networking (§3.3.3) adds transparent proxy egress and a separate LAN-only command executor.
 > Goal: turn a new device (macOS or **Linux**) into a usable Orca development machine with one set of scripts.
 > Origin: generalized from a set of macOS-only scripts (`setup-mini.sh`, `install-agy.sh`, `orca-rpc.{sh,cjs}`,
 > `audit-readiness.cjs`) written for migrating one Mac to another.
@@ -16,12 +17,16 @@
 
 ```sh
 ./setup.sh                          # same as --plan: print what would happen on this device, change nothing
+./setup.sh --config orca.toml        # Linux Docker host: one TOML for server, proxy, DNS, executor and limits
+./setup.sh --config orca.toml --apply # apply that configuration; no role/address flags needed
 ./setup.sh --check                  # read-only readiness report; exit code = number of missing items
 ./setup.sh --apply --role server    # install what is missing, Orca skills and defaults (role is required)
 ./setup.sh --apply --role server --pairing-address <ip-or-host>   # Linux server: Docker Engine + the orca-server container
 ./setup.sh --apply --role server --pairing-address <host-name> --publish-address <private-ipv4>   # port 6768 only there
 ./setup.sh --apply --role server --pairing-address <ip-or-host> --workdir /srv/orca   # projects/ and workspaces/ there
 ./setup.sh --apply --role server --pairing-address <ip-or-host> --upgrade-image       # Linux server: newest image
+./setup.sh --plan --role server --network-mode isolated       # optional proxy gateway and LAN-only executor
+./setup.sh --apply --role server --pairing-address <ip-or-host> --network-mode isolated
 ./setup.sh --apply --role server --power --media      # plus optional modules
 ./setup.sh --check --media          # readiness, counting the given modules' items too
 ./setup.sh --check --json           # the same report as one JSON document (names, states, counts; never values)
@@ -58,7 +63,7 @@ remote/provision.sh --environment <name> --check               # exit code = the
   address in Orca's Settings; a client never advertises one). `--publish-address`, refused in the same places, is the
   server's own private IPv4 address that Docker publishes port 6768 on, and no other host address answers on that
   port; it defaults to an IPv4 `--pairing-address`, a host name needs it, and a re-run keeps the last one (§3.3.2).
-  `--workdir` and `--upgrade-image` are for Linux servers only.
+  `--workdir`, `--upgrade-image` and `--network-mode` are for Linux servers only.
 
 ---
 
@@ -79,11 +84,14 @@ remote/provision.sh --environment <name> --check               # exit code = the
 **Non-goals**
 
 - No SSH configuration (following the existing rule: `SSH is never configured`).
-- No migration or copying of credentials, tokens or private keys; all authentication happens interactively on the target device.
+- No migration or copying of agent credentials, tokens or private keys; agent authentication happens interactively on the target device.
+  Explicit proxy credentials may be entered in a private server TOML on that device (§3.3.3).
 - No project data migration; only extension points are reserved.
 - No organization-specific integrations (internal Git hosts, VPNs, mirrors) in this repository; those go in a local, untracked overlay (§3.7).
 - No Linux arm64.
-- No network setup: the private route between client and server (Tailscale, LAN, WireGuard) is the user's job; `setup.sh` only takes the address to advertise and, on a Linux server, the private host address to publish Orca's port on.
+- No host VPN or private-route setup: the route between client and server (Tailscale, LAN, WireGuard) is the user's
+  job. Optional isolated container networking (§3.3.3) consumes an existing proxy endpoint; it never installs a proxy
+  client, handles SS credentials, installs custom host firewall rules or configures the Docker daemon's proxy.
 - No Fedora/RHEL for now (`pkg-fedora.sh` stays a placeholder).
 - No Windows / WSL for now (revisit later).
 
@@ -370,6 +378,178 @@ shell history would keep it): `read -rs code && orca environment add --name <ser
 the unused link. Never take a link from `docker logs`: with `--no-pairing` the server never writes one there, and a
 log would keep it.
 
+#### 3.3.3 Optional isolated networking and LAN-only execution
+
+Linux server hosts can opt in with `--network-mode isolated`; new installs default to `direct`, preserving §3.3.2.
+The selected mode is recorded in `x-orca-setup.network-mode` in the generated Compose file and kept on later runs.
+Returning to unrestricted bridge egress requires an explicit `--network-mode direct`. A missing or invalid policy
+in isolated mode stops `--apply` before any changes; it never enables direct egress as a fallback. Changing topology
+stops the previous stack before starting the new one so the private port has only one owner; work and account mounts
+remain, but running commands and sessions are interrupted, as with an image upgrade.
+
+```text
+Mac --private published port--> Orca --transparent TCP/DNS--> existing proxy --> Internet / AI providers
+                                 |
+                                 +--private control network--> executor --allowed IPv4 CIDR/port--> LAN
+```
+
+The same digest-locked image supplies four services:
+
+| Service | Permissions and network behavior |
+|---|---|
+| `orca-server` | Same UID:GID, state mounts and read-only root as before; joins `orca-gateway`'s network namespace without capabilities. Proxy environment variables are explicitly empty; TCP is transparently redirected regardless of application proxy support. |
+| `orca-gateway` | Dedicated namespace owner, root with only `NET_ADMIN` and `NET_BIND_SERVICE`; `redsocks` forwards TCP to the existing SOCKS5 or HTTP CONNECT endpoint. A loopback DNS forwarder sends both UDP and TCP DNS queries through that proxy, using certificate-verified DNS-over-HTTPS by default. Owns the private `<publish address>:6768` binding; no other host port is published. |
+| `orca-executor` | Same UID:GID, a separate persistent home, only the shared workdir mounted; no Orca state, agent login directories, local overlay or Docker socket. Runs the non-interactive command service on the private control address, port 7777. No proxy environment and no public egress. |
+| `executor-gateway` | Dedicated executor namespace owner, root with only `NET_ADMIN`; allows direct traffic to the explicit private IPv4 CIDR/protocol/port rules and optional private DNS server. No public proxy or general Internet access. |
+
+The gateway namespaces are connected to a dedicated internal control bridge and an outbound bridge. Firewall rules
+inside each namespace default to DROP, including forwarding; applications cannot change them. Orca can reach the
+executor's command port directly, and the executor can call Orca's control port directly. Public UDP and IPv6 are
+blocked; IPv6-only services, QUIC-only clients and non-TCP public protocols are unsupported. Approved executor UDP
+ports work directly. Docker's embedded DNS is disabled in these namespaces to avoid a resolver bypass. This is more
+than setting `internal: true` or proxy environment variables: unapproved outgoing connections are actually blocked.
+
+**Configure on the target device with one TOML (recommended).** Python 3.11 or newer is required on the Docker host
+only when using TOML. Ubuntu 24.04 and Debian 12 provide compatible Python versions. Copy the tracked template:
+
+```sh
+cp orca.example.toml orca.toml
+chmod 600 orca.toml
+# Edit the server, proxy and private executor rules in this file on the target device.
+./setup.sh --config orca.toml                 # read-only plan
+./setup.sh --config orca.toml --apply
+./setup.sh --config orca.toml --check
+./setup.sh --config orca.toml --apply --upgrade-image
+```
+
+`orca.toml` is ignored by Git and Docker builds. The default lookup is `./orca.toml`, then the last applied TOML
+path recorded in Compose; an explicit `--config FILE` selects another file. A missing recorded TOML is an error;
+`--no-config` explicitly selects the legacy CLI/manifest path. Authentication commands (`--auth-*`) continue to run
+separately. No arguments still mean read-only `--plan`. Public CLI flags override matching TOML fields. Paths in
+TOML support `~`; relative paths resolve against the TOML's directory. Unknown keys and malformed values fail before
+apply. TOML networking, executor rules and limits replace their legacy local manifest settings; tool inventories,
+Orca settings/skills and data mounts keep their existing manifest behavior.
+
+The [complete template](orca.example.toml) includes `[server]`, `[network]`, `[proxy]`, `[dns]`, `[executor]`,
+`[[executor.allow]]` and `[limits]`. Proxy `address` is a numeric IPv4 endpoint reachable from Docker, not an SS URI
+or a subscription. For authenticated SOCKS5/HTTP CONNECT, set both `username` and `password` directly under `[proxy]`.
+Such a file must be caller-owned with mode 0600 or 0400, and must live outside the checkout or at its ignored root
+`orca.toml`. It must also be outside the shared workdir and container data mounts, so execution commands cannot
+read the source credentials. Do not put it in `manifest/local/`, which is copied into application containers. An optional external
+`auth_file` remains supported, mutually exclusive with inline credentials.
+
+Inline credentials are piped over stdin into a temporary, network-disabled container that writes a root-owned
+mode-0600 file in a dedicated Docker volume. Only `orca-gateway` mounts that volume, read-only at `/run/secrets`.
+No password is written to Compose, generated public policy, command arguments, Docker environment, labels or an
+image. `--plan` never creates a volume or publishes credentials; `--check` compares the running gateway's private
+file without changing it. `--apply` synchronizes changes and recreates the stack when its gateway detects changed
+authentication. The volume persists across container removal/reboots; removing it requires reapplying the TOML.
+The TOML remains the only user-maintained input; Compose, policy/resolver files and the private volume are generated
+runtime state. Docker administrators can access that volume, just as they can access other container state.
+
+`server.image_source = "registry"` (default) pulls and locks the configured image's registry digest. For an image
+already built or loaded on the host, set `image_source = "local"` and `image = "your-image:tag"`: setup locks its
+`sha256` content ID without a pull or temporary registry. Later applies keep that ID even if the tag moves;
+`--upgrade-image` explicitly adopts the current tag. A missing locked local image fails instead of pulling. In TOML
+mode the configured image is authoritative: a legacy `manifest/local/Dockerfile` is not built automatically. Build
+any custom image first and name it in TOML. All four services use the same locked image, which must contain the
+gateway/executor scripts from this version of the repository. If an existing registry image lock predates these
+scripts, explicitly pass `--upgrade-image` when applying after the updated image has been published.
+
+**How the generated Compose sets up the gateways.** See the [rendered, annotated example](examples/compose.generated.yaml).
+`orca-server.network_mode: service:orca-gateway` shares the gateway's network namespace: the two containers have the
+same interfaces, routes, firewall and loopback, while retaining separate filesystems and users. Only the gateway
+owns the published port. `orca-executor` similarly shares `executor-gateway`'s namespace. Both gateways attach to
+the internal control bridge and the outbound bridge; the namespace firewall determines which traffic can use the
+outbound route. There is no custom `ipam.gateway` or default-route change to another container: setting a Docker
+bridge gateway alone does not create a proxy. `gateway.sh` installs transparent TCP redirection to `redsocks`,
+proxy-only DNS and DROP policies inside the relevant namespace. The executor instead has direct private CIDR/port
+exceptions and no proxy. Editing the generated YAML is unnecessary; edit TOML and run `--apply`.
+
+**Legacy configuration (still supported).** Without TOML, create `manifest/local/server-network.env` using the tracked example:
+
+```sh
+mkdir -p manifest/local
+cp manifest/local.example/server-network.env manifest/local/server-network.env
+# Edit the proxy address/port and optional private executor DNS on this device, then inspect the plan:
+./setup.sh --plan --role server --network-mode isolated --pairing-address <private-address>
+./setup.sh --apply --role server --network-mode isolated --pairing-address <private-address> --upgrade-image
+```
+
+The explicit image upgrade is needed once if the locked image predates the gateway tools. Later runs keep that
+image; updates still use `--upgrade-image` for Orca and all sidecars together. No additional gateway image or runtime
+package installation is needed. A custom `manifest/local/Dockerfile` continues to extend the locked image.
+
+Only the keys in `manifest/server-network.env` are accepted (data only, never sourced as shell):
+
+| Key | Meaning |
+|---|---|
+| `proxy_type` | `socks5` or `http-connect` |
+| `proxy_address`, `proxy_port` | Reachable unicast IPv4 literal and port of an existing proxy endpoint; loopback, URLs and inline authentication fields are refused. A host-side proxy must listen on an address reachable from Docker, not only host loopback. |
+| `proxy_auth_file` | Optional absolute path to an external, root-owned mode-0600 JSON file with exactly `username` and `password`. Provision it separately on the target; keep the parent directory traversable so setup can stat the file. Setup only checks its existence and renders the path, never reads or copies its contents. Compose mounts it as a secret only into `orca-gateway`. Empty by default. |
+| `dns_address` | IPv4 resolver reachable from the proxy exit, default `1.1.1.1`. All DNS forwarding travels through the proxy. |
+| `dns_transport` | `https` (default): DNS wireformat POST to `/dns-query` over TLS on port 443. `tcp`: traditional DNS over TCP/53; the proxy must explicitly permit it. There is no direct fallback. |
+| `dns_tls_name` | TLS certificate name, SNI and HTTP host for DoH, default `cloudflare-dns.com`. The connection uses `dns_address` directly, so bootstrap DNS is unnecessary; certificate verification stays enabled. |
+| `executor_dns` | Optional private IPv4 resolver reached directly on TCP/UDP 53. Empty by default: the executor has no external DNS. Use a private resolver that knows the internal names your workloads need. |
+| `control_subnet` | Canonical private `/24` for the Docker control bridge, default `172.30.70.0/24`; choose a non-overlapping range. Orca and executor use its `.2` and `.3` addresses. |
+
+Add direct LAN exceptions in `manifest/local/server-network-allow.tsv`: four tab-separated columns, `name`, canonical
+private IPv4 CIDR, `tcp` or `udp`, and one destination port. Public ranges, broad `0.0.0.0/0`, host bits in a subnet,
+port ranges and executable values are refused. The shipped file has no rules; local rows follow the usual overlay
+merge by name. Exceptions use destination addresses, not domain suffixes; if an internal name resolves to a public
+address, the executor still cannot connect. Narrow rules to the services needed: an allowed internal relay could
+itself offer access beyond that LAN, which destination filtering cannot inspect.
+
+**Run a workload.** From an Orca terminal inside the server container:
+
+```sh
+cd <shared-workdir>/projects/<project>
+orca-exec -- pnpm test
+orca-exec --cwd <shared-workdir>/projects/<project> -- sh -c 'cmake --build build && ./build/tests'
+printf 'input' | orca-exec --stdin -- python3 script.py
+```
+
+`orca-exec` preserves arguments, binary stdout/stderr and the command's exit code. It checks that the working
+directory resolves inside the shared workdir (including symlinks), supplies EOF on stdin unless `--stdin` is given
+(up to 1 MiB), and allocates no TTY. Environment and agent credentials are not forwarded. Disconnection terminates
+the remote process group; transport/request failures return 125, never execute locally. Builds write as the host
+user and persist in the shared workdir. Install additional workload tools in the image through the existing local
+Dockerfile; fetch dependencies from permitted LAN mirrors or prepare them in Orca first.
+
+Orca and its agents still start in `orca-server`: this feature provides an explicit execution command, not a change
+to upstream Orca's shell dispatch. Use `orca-exec` for commands that require the LAN-only execution environment;
+ordinary shell commands keep Orca's proxied network. The command service trusts Orca's private control address,
+publishes no host port, and executes arbitrary user-requested commands as the same user. It is not a tenant isolation
+boundary. No Docker socket or Docker API is exposed to an agent.
+
+**Failure and readiness.** Applications start after their gateway is healthy. A failed proxy endpoint or daemon
+cannot cause direct fallback because filtering and redirection remain installed. An upstream proxy outage leaves
+the private Orca connection and direct LAN execution available. Stopping/replacing a namespace-owning gateway
+container can also interrupt its application's private connectivity; `--apply` recreates the stack when a sidecar
+is absent/unhealthy or an application refers to an old namespace. Firewall changes make a gateway unhealthy.
+`--check` reports policy drift and gateway/executor health; JSON adds `server.network-mode="isolated"`. These checks
+attest local policy/namespace health, not AI provider availability, IP reputation or the provider-observed exit IP.
+The upstream proxy must itself select the intended exit; this project cannot prevent its operator from changing
+nodes or using an exit pool. A fixed endpoint alone does not prove a fixed public IP.
+
+Policy changes are included in the Compose checksum and recreate all four services. Healthchecks and `--check`
+are read-only, and plans do not create policy files, install tools or contact the proxy. Only approved credential-free
+values are written into the generated `network/` directory. The optional gateway secret is read only inside the
+gateway and converted to its mode-0600 `/tmp/redsocks.conf` on tmpfs; it is never put in environment variables,
+image layers, Compose labels, the overlay or logs. Rotating it makes gateway health stale until `--apply` recreates
+the stack. Authentication values are limited to 1-255 printable ASCII characters. Setup does not import any proxy
+credentials, subscriptions or SS keys; authenticated SOCKS5/HTTP CONNECT consumes an already provisioned file.
+
+A fresh Orca profile may prepare its native runtime by downloading it before `status` becomes reachable. Working
+proxy DNS/HTTPS is therefore required even before agent login; gateway process health alone does not verify it.
+
+**Host bootstrap and image pulls remain separate.** Docker daemon traffic does not originate in these namespaces.
+Supply the host's apt/private routes and, if needed, daemon/build proxy configuration yourself; no host-wide TUN or
+custom host firewall rules are installed. The first image must be pulled using working host networking (or loaded in advance),
+before a gateway from that image can start. Docker itself still manages host bridge/NAT rules as described in §3.3.2;
+the additional filtering rules here live only in the sidecars' network namespaces. Protect the existing proxy
+endpoint's listener separately.
+
 ### 3.4 Authentication (all interactive, run on demand)
 
 | Mode | What it does | Linux without a desktop |
@@ -516,6 +696,8 @@ and `manifest/local/Dockerfile` is built on top of the locked Orca server image 
 inside the container (skills, settings, `--check`) reads the copy of `manifest/local/` that the last `--apply` put in
 `~/.config/orca-setup/docker/manifest-local`, so an overlay change reaches it with the next `--apply`. Overlay auth
 modules are not implemented yet.
+`manifest/local/server-network.env` and `server-network-allow.tsv` configure optional isolated container networking
+and the LAN-only executor (§3.3.3). They hold no credentials. Removing them while isolated does not enable direct mode.
 
 ---
 
@@ -975,6 +1157,26 @@ A publish job runs only on pushes to `main`.
 ---
 
 ## 7. Test strategy
+
+- `tests/bats/network.bats` covers isolated topology rendering, mode persistence, validation before changes,
+  idempotence, policy drift and explicit return to direct mode. Existing direct-mode tests remain unchanged in scope.
+- `python3 -m unittest discover -s tests/python -v` exercises actual executor sockets/subprocesses, binary streams,
+  exit codes, cwd/symlink validation, cancellation, background-process cleanup and DNS framing, with no credentials.
+- `tests/integration/network.sh` runs after the existing Linux server integration on the GitHub-hosted VM. A local
+  fixture supplies unauthenticated/authenticated SOCKS5, HTTP CONNECT, DNS and LAN TCP/UDP services; real packets verify proxy routing, allowed and
+  denied executor ports, DNS/IPv6 restrictions, no direct fallback on proxy failure, private control availability,
+  idempotence and firewall-drift recovery. It never contacts an AI provider or a live proxy. A Docker daemon is
+  required; passing unit/protocol/schema checks alone does not constitute packet-level or real-device acceptance.
+  The fixture reuses only public native-runtime artifacts downloaded by the preceding direct-network test; profile,
+  settings and authentication files are not copied into the new container home.
+
+Manual network acceptance on 2026-10-26 used Ubuntu 24.04 x86_64, Docker Engine 29.9.2 and Compose 5.6.1, with a
+separately provisioned authenticated SOCKS5 endpoint. Setup ran as a disposable non-root user with fresh Orca data.
+Twenty-one baseline checks, eight fault checks and six recovery checks passed: transparent HTTPS/DoH, private port
+binding, LAN-only execution/RPC, blocked public egress and Docker DNS bypass, no direct fallback during a forced proxy
+outage, preserved private control access from a Mac, unhealthy-policy reporting, recovery and persistent work data.
+The original container was restored and temporary authentication removed. Provider probes carried no API credentials;
+HTTP 401/403 confirms transport only. This does not complete the interactive pairing/account acceptance in §6.6.
 
 - **Static**: `shellcheck` every `*.sh`; `node --check` every `*.cjs`.
 - **Unit**: bats tests for `detect.sh` (fake `/etc/os-release`, `uname`), manifest parsing, role checks and `--plan` output snapshots.

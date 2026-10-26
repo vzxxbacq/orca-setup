@@ -1,0 +1,2 @@
+# Add only the LAN destinations and ports your execution workloads need, using real values on the target device.
+# Columns (tab-separated): name, canonical private IPv4 CIDR, tcp|udp, destination port.

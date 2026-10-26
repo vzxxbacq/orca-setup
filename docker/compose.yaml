@@ -9,6 +9,9 @@ x-orca-setup:
   workdir: "@WORKDIR@"
   pairing-address: "@PAIRING_ADDRESS@"
   publish-address: "@PUBLISH_ADDRESS@"
+  network-mode: "@NETWORK_MODE@"
+  network-policy: "@POLICY_SUM@"
+  config-file: "@CONFIG_FILE@"
 services:
   orca-server:
     image: "@IMAGE@"
@@ -19,10 +22,9 @@ services:
     # The compose project's own bridge network. Port 6768 is published on one host address only, the private
     # publish address (--publish-address): the host's other addresses (a public one included) do not answer on it.
     # Nothing else is published.
-    ports:
-      - "@PUBLISH_ADDRESS@:@PORT@:@PORT@/tcp"
+@SERVER_NETWORK@
     # The host's name instead of the container's id: Orca shows it to clients and records it in its profile locks.
-    hostname: "@HOSTNAME@"
+@SERVER_HOSTNAME@
     # Docker starts it again after a reboot, unless it was stopped on purpose (docker compose stop).
     restart: unless-stopped
     init: true
@@ -42,6 +44,7 @@ services:
       # Claude Code keeps its state file in $CLAUDE_CONFIG_DIR/.claude.json instead of ~/.claude.json: a file of its
       # own could not be bind-mounted, because Claude replaces it by renaming a new copy over it.
       CLAUDE_CONFIG_DIR: "@HOME@/.claude"
+@SERVER_ENVIRONMENT@
     labels:
       org.orca-setup.config: "@CONFIG@"
     # The log stays next to the container whatever the daemon's default driver is, so the removed container of a
@@ -56,3 +59,4 @@ services:
     # (manifest/server-mounts.tsv). A missing host directory is an error, never created by Docker as root.
     volumes:
 @VOLUMES@
+@NETWORK_SERVICES@

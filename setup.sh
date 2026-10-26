@@ -23,6 +23,10 @@ ORCA_SETUP_ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$ORCA_SETUP_ROOT/lib/docker-host.sh"
 # shellcheck source=lib/orca-server.sh
 . "$ORCA_SETUP_ROOT/lib/orca-server.sh"
+# shellcheck source=lib/server-network.sh
+. "$ORCA_SETUP_ROOT/lib/server-network.sh"
+# shellcheck source=lib/server-config.sh
+. "$ORCA_SETUP_ROOT/lib/server-config.sh"
 for file in "$ORCA_SETUP_ROOT"/modules/*.sh "$ORCA_SETUP_ROOT"/auth/*.sh; do
   # shellcheck source=/dev/null
   . "$file"
@@ -35,7 +39,9 @@ TASK_SOURCES='linear'
 usage() {
   cat <<'EOF'
 Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [--pairing-address ADDRESS]
-                  [--publish-address IPV4] [--workdir DIR] [--upgrade-image] [modules] [--task-source linear]
+                  [--publish-address IPV4] [--workdir DIR] [--upgrade-image] [--network-mode direct|isolated]
+                  [modules] [--task-source linear]
+       ./setup.sh --config FILE [--plan | --apply | --check [--json]]
        ./setup.sh --auth-gh | --auth-codex | --auth-claude | --auth-agy | --auth-linear
 
   --plan         Print what --apply would do on this device (default; read-only).
@@ -45,6 +51,10 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
   --json         With --check: print the report as one JSON document instead (names, states, counts and
                  versions only, never credential values); the exit code is the same.
   --role R       Pairing role of this device: client (dials servers) or server (is dialed).
+  --config FILE  Linux server TOML: server, image, proxy (inline credentials allowed), DNS, executor and limits.
+                 Defaults to ./orca.toml, then the last applied config. CLI flags override public TOML settings.
+                 Requires Python 3.11+. No arguments still only prints the plan; see orca.example.toml.
+  --no-config    Explicitly ignore default/recorded TOML and use legacy CLI/manifest settings.
   --pairing-address ADDRESS
                  Linux servers: the private IPv4 address or host name clients dial (Tailscale, LAN,
                  WireGuard). Required for --apply --role server on Linux; never 127.0.0.1 or a wildcard.
@@ -59,6 +69,10 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
                  when it changed (otherwise the digest locked by the first --apply is kept).
   --task-source linear
                  Also make Linear Orca's task source (--apply), and require it to be connected (--check).
+  --network-mode direct|isolated
+                 Linux servers: direct (existing bridge networking) or isolated (transparent proxy gateway
+                 and a separate LAN-only executor). The last mode is kept; first install defaults to direct.
+                 Isolated mode requires manifest/local/server-network.env; see README section 3.3.3.
 
 Optional modules (installed only together with --apply; --check also checks the ones given):
   --power --containers --apple --android --media --agent-gemini --gpu
@@ -76,10 +90,15 @@ pairing_address=''
 publish_address=''
 workdir=''
 upgrade_image=no
+network_mode=''
+NETWORK_MODE=direct
+NETWORK_PREVIOUS_MODE=direct
 task_source=''
 modules=''
 auths=''
 check_json=no
+config_file=''
+no_config=no
 
 set_action() {
   [ -z "$action" ] || [ "$action" = "$1" ] || die "choose only one of --plan, --apply, --check and --auth-*"
@@ -92,6 +111,11 @@ while [ $# -gt 0 ]; do
     --apply) set_action apply ;;
     --check) set_action check ;;
     --json) check_json=yes ;;
+    --config | --config=*)
+      if [ "$1" = --config ]; then [ $# -ge 2 ] || die '--config needs a TOML file'; config_file=$2; shift
+      else config_file=${1#--config=}; fi
+      [ -n "$config_file" ] || die '--config needs a TOML file' ;;
+    --no-config) no_config=yes ;;
     --role | --role=*)
       if [ "$1" = --role ]; then [ $# -ge 2 ] || die '--role needs client or server'; role=$2; shift; else role=${1#--role=}; fi
       case "$role" in client | server) ;; *) die "--role must be client or server, not: $role" ;; esac ;;
@@ -106,6 +130,10 @@ while [ $# -gt 0 ]; do
       if [ "$1" = --workdir ]; then [ $# -ge 2 ] || die '--workdir needs a directory'; workdir=$2; shift; else workdir=${1#--workdir=}; fi
       [ -n "$workdir" ] || die '--workdir needs a directory' ;;
     --upgrade-image) upgrade_image=yes ;;
+    --network-mode | --network-mode=*)
+      if [ "$1" = --network-mode ]; then [ $# -ge 2 ] || die '--network-mode needs direct or isolated'; network_mode=$2; shift
+      else network_mode=${1#--network-mode=}; fi
+      case "$network_mode" in direct | isolated) ;; *) die '--network-mode needs direct or isolated' ;; esac ;;
     --task-source | --task-source=*)
       if [ "$1" = --task-source ]; then [ $# -ge 2 ] || die '--task-source needs a value'; task_source=$2; shift; else task_source=${1#--task-source=}; fi
       case " $TASK_SOURCES " in *" $task_source "*) ;; *) die "unknown task source: $task_source" ;; esac ;;
@@ -126,6 +154,9 @@ done
 action=${action:-plan}
 modules=${modules# }
 auths=${auths# }
+require_non_root
+setup_environment
+server_config_load
 [ "$action" != auth ] || [ -z "$modules" ] || die "modules run only with --apply (or show with --plan, or check with --check): $modules"
 [ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (README section 5.1).'
 [ "$check_json" = no ] || [ "$action" = check ] || die '--json works only with --check.'
@@ -133,9 +164,7 @@ auths=${auths# }
 [ -z "$workdir" ] || [ "$action" != auth ] || die '--workdir does not apply to --auth-*.'
 [ -z "$publish_address" ] || [ "$action" != auth ] || die '--publish-address does not apply to --auth-*.'
 
-require_non_root
-setup_environment
-
+[ -z "$network_mode" ] || [ "$action" != auth ] || die '--network-mode does not apply to authentication flags.'
 OS=$(detect_os)
 ARCH=$(detect_arch)
 SUPPORT=$(detect_support)
@@ -184,6 +213,15 @@ WORKDIR=''
 PUBLISH_ADDRESS=''
 PUBLISH_PROBLEM=''
 if [ "$PLATFORM" = debian ] && ! in_container && [ "$(linux_role)" = server ]; then SERVER_HOST=yes; fi
+[ -z "$CONFIG_FILE" ] || [ "$SERVER_HOST" = yes ] || die '--config is for Linux server Docker hosts.'
+[ -z "$network_mode" ] || [ "$SERVER_HOST" = yes ] || die '--network-mode belongs to a Linux server Docker host.'
+if [ "$SERVER_HOST" = yes ]; then
+  NETWORK_PREVIOUS_MODE=$(server_compose_value network-mode)
+  NETWORK_PREVIOUS_MODE=${NETWORK_PREVIOUS_MODE:-direct}
+  NETWORK_MODE=${network_mode:-$NETWORK_PREVIOUS_MODE}
+  NETWORK_MODE=${NETWORK_MODE:-direct}
+  case "$NETWORK_MODE" in direct | isolated) ;; *) die 'recorded network-mode is invalid; pass --network-mode explicitly' ;; esac
+fi
 # An unsupported device is refused by every mode, with its reason, before anything here matters.
 if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported ]; then
   case "$workdir" in \~) workdir=$HOME ;; \~/*) workdir=$HOME/${workdir#\~/} ;; esac
@@ -196,6 +234,7 @@ if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported
   [ -z "$problem" ] || die "manifest/server-mounts.tsv (or its local overlay): $problem."
   problem=$(server_workdir_problem "$WORKDIR")
   [ -z "$problem" ] || die "--workdir $WORKDIR is refused: $problem."
+  server_config_check_mounts "$WORKDIR"
   PUBLISH_ADDRESS=$(server_publish_address)
   if [ -n "$PUBLISH_ADDRESS" ]; then
     PUBLISH_PROBLEM=$(publish_address_problem "$PUBLISH_ADDRESS")

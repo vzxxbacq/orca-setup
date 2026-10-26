@@ -306,14 +306,35 @@ case "$1" in
   image)
     ref=${!#}
     [ -r "$SB/docker/images/$(key "$ref")" ] || exit 1
-    case " $* " in *RepoDigests*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
+    case " $* " in *RepoDigests* | *'.Id'*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
+  volume)
+    case "$2" in
+      inspect) [ -d "$SB/docker/volumes/${!#}" ] ;;
+      create) echo "${log% }" >>"$FAKE_LOG"; mkdir -p "$SB/docker/volumes/${!#}" ;;
+    esac ;;
   container)
     [ "$2" = inspect ] && [ -r "$SB/docker/container" ] || exit 1
-    case " $* " in *NetworkMode*) cat "$SB/docker/ports" 2>/dev/null ;; *) cat "$SB/docker/container" ;; esac ;;
+    name=${!#}
+    case " $* " in
+      *State.Health.Status*) [ ! -e "$SB/docker/unhealthy-$name" ] && echo healthy ;;
+      *NetworkMode*NetworkSettings.Ports*) cat "$SB/docker/ports" 2>/dev/null ;;
+      *NetworkMode*) case "$name" in orca-server) echo container:orca-gateway-id ;; orca-executor) echo container:executor-gateway-id ;; esac ;;
+      *'.Id'*) echo "$name-id" ;;
+      *)
+        if [ "$name" != orca-server ]; then [ -e "$SB/docker/isolated" ] && [ ! -e "$SB/docker/missing-$name" ] || exit 1; fi
+        cat "$SB/docker/container" ;;
+    esac ;;
   compose)
     echo "${log% }" >>"$FAKE_LOG"
+    rm -f "$SB/docker/secret-changed"
     file=$3
-    label=$(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$file")
+    if [ "${4:-}" = down ]; then
+      rm -f "$SB/docker/container" "$SB/docker/ports" "$SB/docker/isolated"
+      exit 0
+    fi
+    label=$(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$file" | head -n 1)
+    if grep -qF '    network_mode: "service:orca-gateway"' "$file"; then touch "$SB/docker/isolated"
+    else rm -f "$SB/docker/isolated"; fi
     echo "running $label" >"$SB/docker/container"
     # The network mode, then "<host ip>|<host port>|<port>/tcp" for each published port.
     if grep -qx '    network_mode: host' "$file"; then echo host
@@ -325,18 +346,26 @@ case "$1" in
     prev=''; for a; do [ "$prev" != --tag ] || echo "$a" >"$SB/docker/images/$(key "$a")"; prev=$a; done ;;
   run)
     shift
-    envs=()
+    envs=(); secret_volume=''
     while [ $# -gt 0 ]; do
       case "$1" in
-        --rm | --read-only) shift ;;
+        --rm | --read-only | --interactive) shift ;;
         --env) envs+=("$2"); shift 2 ;;
-        --network | --tmpfs | --user | --volume) shift 2 ;;
+        --volume) case "$2" in *:/run/secrets) secret_volume=${2%:/run/secrets} ;; esac; shift 2 ;;
+        --network | --tmpfs | --user | --cap-drop | --entrypoint) shift 2 ;;
         *) break ;;
       esac
     done
     echo "docker run $1 ${*:2}" >>"$FAKE_LOG"
     [ -r "$SB/docker/images/$(key "$1")" ] || { echo "run: no image $1" >&2; exit 125; }
     shift
+    if [ -n "$secret_volume" ] && [ "${1:-}" = /opt/orca-setup/docker/proxy-secret.py ]; then
+      cat >"$SB/docker/volumes/$secret_volume/auth"
+      chmod 600 "$SB/docker/volumes/$secret_volume/auth"
+      cp "$SB/docker/volumes/$secret_volume/auth" "$SB/docker/secret-current"
+      touch "$SB/docker/secret-changed"
+      exit 0
+    fi
     map "$@"
     env ${envs[@]+"${envs[@]}"} "${mapped[@]}" ;;
   exec)
@@ -349,6 +378,16 @@ case "$1" in
         *) break ;;
       esac
     done
+    if [ "$1" = orca-gateway ] || [ "$1" = executor-gateway ]; then
+      if [ "${3:-}" = /opt/orca-setup/docker/proxy-secret.py ]; then
+        desired=$(cat)
+        [ -f "$SB/docker/secret-current" ] && [ "$(cat "$SB/docker/secret-current")" = "$desired" ]
+        exit
+      fi
+      if [ "${3:-}" = check ] && [ -e "$SB/docker/secret-changed" ]; then exit 1; fi
+      [ ! -e "$SB/docker/unhealthy-$1" ]
+      exit
+    fi
     [ "$(cut -d' ' -f1 "$SB/docker/container" 2>/dev/null)" = running ] || { echo "Error: container $1 is not running" >&2; exit 1; }
     shift
     echo "docker exec $*" >>"$FAKE_LOG"
