@@ -99,8 +99,10 @@ apply_config() { run_setup --config "$CONFIG" --apply "$@"; }
 }
 
 @test "inline credentials cannot be inside the executor shared workdir" {
-  sed "s|workdir = \"./work\"|workdir = \"$SB\"|" "$CONFIG" >"$CONFIG.new"
-  cp "$CONFIG.new" "$CONFIG"
+  mkdir -p "$SB/work"
+  sed "s|workdir = \"./work\"|workdir = \"$SB/work\"|" "$CONFIG" >"$SB/work/orca.toml"
+  CONFIG=$SB/work/orca.toml
+  chmod 600 "$CONFIG"
   apply_config
   [ "$status" -ne 0 ]
   [[ "$output" == *'outside application data mounts and the shared workdir'* ]]
