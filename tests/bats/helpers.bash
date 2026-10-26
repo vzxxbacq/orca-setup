@@ -51,8 +51,24 @@ fake_present() {
   for name in "$@"; do fake_cmd "$name" "echo \"$name 1.0.0\""; done
 }
 
+# fake_uname <kernel> <machine>: `uname -n` (the host name) answers fakehost.
 fake_uname() {
-  fake_cmd uname "case \"\${1:-}\" in -m) echo $2 ;; *) echo $1 ;; esac"
+  fake_cmd uname "case \"\${1:-}\" in -m) echo $2 ;; -n) echo fakehost ;; *) echo $1 ;; esac"
+}
+
+# fake_ip <address...>: `ip -4 -o addr show` lists lo (127.0.0.1/8) and each address (also any line added to
+# $SB/ip-addresses later) on an interface of its own; any other ip command fails.
+fake_ip() {
+  printf '%s\n' "$@" >"$SB/ip-addresses"
+  # shellcheck disable=SC2016 # the stub body expands when the stub runs
+  fake_cmd ip '[ "$*" = "-4 -o addr show" ] || { echo "ip $*" >>"$FAKE_LOG"; exit 1; }
+echo "1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever"
+n=0
+while read -r address; do
+  [ -n "$address" ] || continue
+  echo "$((n + 2)): eth$n    inet $address/24 brd ${address%.*}.255 scope global eth$n\       valid_lft forever preferred_lft forever"
+  n=$((n + 1))
+done <"$SB/ip-addresses"'
 }
 
 # fake_os_release <ID> <VERSION_ID> [ID_LIKE]: with the release code name of Ubuntu 24.04 and Debian 12.
@@ -247,9 +263,10 @@ for fpr in $fprs; do printf "pub:-:4096:1:%s:0:::-:::scESC::::::23::0:\nfpr:::::
 # otherwise it appears when the fake sudo installs docker-ce. The daemon answers while $SB/docker/daemon exists, to
 # this session when $SB/docker/session-group exists (the session has the docker group) or through the fake sg once
 # the group database lists the user. Pulls resolve tags through fake_registry; `compose up` records the container
-# from the compose file and starts the runtime ($SB/runtime-up); `run` and `exec` run their command here, with the
-# image's /opt/orca-setup mapped to this repository and ORCA_SETUP_CONTAINER set for exec, like inside the container.
-# Every call that talks to the daemon is logged without its --env values.
+# from the compose file and starts the runtime ($SB/runtime-up), and its network mode and published ports (in
+# $SB/docker/ports, which `container inspect` answers for a format naming NetworkMode); `run` and `exec` run their
+# command here, with the image's /opt/orca-setup mapped to this repository and ORCA_SETUP_CONTAINER set for exec, like
+# inside the container. Every call that talks to the daemon is logged without its --env values.
 fake_docker() {
   mkdir -p "$SB/docker/images" "$SB/registry"
   touch "$SB/docker/daemon" "$SB/docker/compose"
@@ -292,12 +309,15 @@ case "$1" in
     case " $* " in *RepoDigests*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
   container)
     [ "$2" = inspect ] && [ -r "$SB/docker/container" ] || exit 1
-    cat "$SB/docker/container" ;;
+    case " $* " in *NetworkMode*) cat "$SB/docker/ports" 2>/dev/null ;; *) cat "$SB/docker/container" ;; esac ;;
   compose)
     echo "${log% }" >>"$FAKE_LOG"
     file=$3
     label=$(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$file")
     echo "running $label" >"$SB/docker/container"
+    # The network mode, then "<host ip>|<host port>|<port>/tcp" for each published port.
+    if grep -qx '    network_mode: host' "$file"; then echo host
+    else echo orca-server_default; sed -n 's/^      - "\(.*\):\([0-9]*\):\([0-9]*\)\/tcp"$/\1|\2|\3\/tcp/p' "$file"; fi >"$SB/docker/ports"
     cp "$file" "$SB/docker/compose-used.yaml"
     touch "$SB/runtime-up" ;;
   build)

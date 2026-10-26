@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # The Linux server in Docker (P5, README section 6.7): Docker Engine on the host, the docker group and sg, the
-# directories, compose.yaml, the image lock, the container, the logins and the combined --check, against fake apt,
-# sudo, gpg, docker, sg and Orca. Nothing here runs apt, sudo or Docker for real.
+# directories, the publish address, compose.yaml, the image lock, the container, the logins and the combined --check,
+# against fake apt, sudo, gpg, docker, sg, ip and Orca. Nothing here runs apt, sudo or Docker for real.
 
 load helpers
 
@@ -24,6 +24,8 @@ setup() {
   echo ca-certificates >>"$FAKE_DPKG"
   fake_docker
   fake_registry "$IMAGE:main" "$D1"
+  # The host's own addresses: the pairing address is one of them, so it is the default publish address.
+  fake_ip "$ADDRESS"
   COMPOSE=$HOME/.config/orca-setup/docker/compose.yaml
   LOCK=$HOME/.config/orca-setup/docker/image.lock
   # No systemd unless a test boots the fake one (the machine running the tests may have it).
@@ -220,7 +222,7 @@ only_present() {
 
 # ------------------------------------------------------------------ compose.yaml
 
-@test "compose.yaml: your UID:GID and home, host network, read-only, tmpfs /tmp, init, no pairing, same-path mounts" {
+@test "compose.yaml: your UID:GID and home, one published port, read-only, tmpfs /tmp, init, no pairing, same-path mounts" {
   image_tools
   existing_docker
   apply_server
@@ -230,7 +232,15 @@ only_present() {
   grep -qxF "    image: \"$IMAGE@sha256:$D1\"" "$COMPOSE"
   grep -qxF '    pull_policy: never' "$COMPOSE"
   grep -qxF "    command: [\"orca-ide\", \"serve\", \"--supervise\", \"--no-pairing\", \"--port\", \"6768\", \"--pairing-address\", \"$ADDRESS\"]" "$COMPOSE"
-  grep -qxF '    network_mode: host' "$COMPOSE"
+  # The compose project's bridge network, with exactly one published port: 6768, on the publish address only (by
+  # default the IPv4 pairing address), recorded like the pairing address; the host's name, not the container's id.
+  run ! grep -q network_mode "$COMPOSE"
+  [ "$(grep -c '^    ports:$' "$COMPOSE")" -eq 1 ]
+  [ "$(sed -n '/^    ports:$/,/^    [a-z]/p' "$COMPOSE" | grep '^      - ')" = "      - \"$ADDRESS:6768:6768/tcp\"" ]
+  [ "$(grep -c '6768/tcp' "$COMPOSE")" -eq 1 ]
+  grep -qxF "  publish-address: \"$ADDRESS\"" "$COMPOSE"
+  grep -qxF "  pairing-address: \"$ADDRESS\"" "$COMPOSE"
+  grep -qxF '    hostname: "fakehost"' "$COMPOSE"
   grep -qxF '    restart: unless-stopped' "$COMPOSE"
   grep -qxF '    init: true' "$COMPOSE"
   grep -qxF '    user: "1000:1000"' "$COMPOSE"
@@ -297,15 +307,15 @@ only_present() {
   ORCA_SETUP_ROOT=$REPO_ROOT
   mkdir -p "$SB/manifest/local"
   printf 'mem_limit=8g\npids_limit=4096\nmem_limit=16g\ncpus=2.5\n' >"$SB/manifest/local/server-limits.env"
-  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS"
+  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS" "$ADDRESS"
   [ "$status" -eq 0 ]
   [[ "$output" == *$'    mem_limit: "16g"\n    pids_limit: "4096"\n    cpus: "2.5"\n'* ]]
   printf 'pids_limit=8\n' >"$SB/manifest/local/server-limits.env"
-  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS"
+  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS" "$ADDRESS"
   [ "$status" -ne 0 ]
   [[ "$output" == *'must be a number, 64 or more'* ]]
   printf 'privileged=true\n' >"$SB/manifest/local/server-limits.env"
-  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS"
+  run server_compose "$IMAGE@sha256:$D1" "$HOME/orca" "$ADDRESS" "$ADDRESS"
   [ "$status" -ne 0 ]
   [[ "$output" == *'unknown key privileged'* ]]
 }
@@ -349,6 +359,119 @@ only_present() {
   [ "$status" -eq 1 ]
   [[ "$output" == *'are for Linux servers'* ]]
   no_calls
+}
+
+# ------------------------------------------------------------------ publish address
+
+# publish_problem <address>: the refusal of setup.sh's address check, without the host lookup.
+publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server.sh"; publish_address_problem "$1"); }
+
+@test "--publish-address defaults to an IPv4 pairing address of this host and is required for a host name" {
+  run_setup --plan --role server --pairing-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *"publish  $ADDRESS:6768 (the pairing address); port 6768 is not reachable on this host's other addresses"* ]]
+  [[ "$output" == *"network  the compose project's bridge network; only port 6768 is published, on $ADDRESS alone"* ]]
+  run_setup --plan --role server --pairing-address devbox.example.net
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'missing  --publish-address <ipv4>'* ]]
+  run_setup --apply --role server --pairing-address devbox.example.net
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--pairing-address devbox.example.net is a host name, so --apply --role server also needs --publish-address <ipv4>'* ]]
+  # An IPv4 pairing address this host does not have (clients reach it through a VPN mapping) is no default either.
+  run_setup --plan --role server --pairing-address 198.51.100.7
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'refuse   publishing port 6768 on 198.51.100.7 (the pairing address): it is not assigned to a network interface of this host; pass --publish-address <ipv4>'* ]]
+  run_setup --apply --role server --pairing-address 198.51.100.7
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'port 6768 cannot be published on 198.51.100.7 (the pairing address): it is not assigned to a network interface of this host.'* ]]
+  run_setup --plan --role server --pairing-address devbox.example.net --publish-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *"publish  $ADDRESS:6768 (--publish-address)"* ]]
+  no_calls
+}
+
+@test "--publish-address must be an IPv4 address of this host; names, loopback, wildcard, broadcast and multicast are refused" {
+  local address
+  for address in devbox.example.net 127.0.0.1 127.0.0.2 0.0.0.0 255.255.255.255 224.0.0.251 239.1.2.3 256.1.1.1 \
+    203.0.113.010 1.2.3 '' 'a b' ::1 "$ADDRESS:6768"; do
+    run_setup --plan --role server --pairing-address "$ADDRESS" --publish-address "$address"
+    [ "$status" -eq 1 ] || { echo "accepted: $address"; return 1; }
+    [[ "$output" == *"--publish-address $address is refused: "* ]] || [[ "$output" == *'--publish-address needs'* ]] ||
+      { echo "$output"; return 1; }
+  done
+  [[ "$(publish_problem 224.0.0.251)" == *multicast* ]]
+  run_setup --plan --role server --pairing-address "$ADDRESS" --publish-address 198.51.100.7
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address 198.51.100.7 is refused: it is not assigned to a network interface of this host.'* ]]
+  echo 198.51.100.7 >>"$SB/ip-addresses"
+  run_setup --plan --role server --pairing-address "$ADDRESS" --publish-address=198.51.100.7
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'publish  198.51.100.7:6768 (--publish-address)'* ]]
+  # Without ip the address cannot be checked, so it is refused.
+  rm "$SB/bin/ip"
+  run_setup --plan --role server --pairing-address "$ADDRESS" --publish-address 198.51.100.7
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address 198.51.100.7 is refused: it cannot be checked: the ip command (iproute2) is missing.'* ]]
+  no_calls
+}
+
+@test "--publish-address is for Linux server hosts only; the CI loopback override allows 127.0.0.2, never 127.0.0.1" {
+  run_setup --plan --role client --publish-address "$ADDRESS"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address is for --role server'* ]]
+  run_setup --auth-gh --publish-address "$ADDRESS"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address does not apply to --auth-*'* ]]
+  ORCA_SETUP_CONTAINER=orca-server run_setup --plan --role server --publish-address "$ADDRESS"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address belongs to the Docker host'* ]]
+  # lo answers every 127.0.0.0/8 address, so the override needs no interface for it.
+  ORCA_SETUP_TEST_LOOPBACK_PAIRING_ADDRESS=1 run_setup --plan --role server --pairing-address 127.0.0.2
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'publish  127.0.0.2:6768 (the pairing address)'* ]]
+  ORCA_SETUP_TEST_LOOPBACK_PAIRING_ADDRESS=1 run_setup --plan --role server --pairing-address 127.0.0.2 --publish-address 127.0.0.1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address 127.0.0.1 is refused: it is a loopback address'* ]]
+  fake_uname Darwin arm64
+  run_setup --plan --publish-address "$ADDRESS"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *'--publish-address is for Linux servers'* ]]
+  no_calls
+}
+
+@test "the publish address is recorded: a re-run keeps it, another one re-creates the container, a default follows the pairing address" {
+  image_tools
+  existing_docker
+  echo 192.0.2.10 >>"$SB/ip-addresses"
+  run_setup --apply --role server --pairing-address devbox.example.net --publish-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qxF "  publish-address: \"$ADDRESS\"" "$COMPOSE"
+  grep -qxF "      - \"$ADDRESS:6768:6768/tcp\"" "$COMPOSE"
+  # A re-run without --publish-address keeps it.
+  : >"$FAKE_LOG"
+  run_setup --apply --role server --pairing-address devbox.example.net
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  only_present
+  run ! grep -q compose "$FAKE_LOG"
+  run_setup --plan --role server --pairing-address devbox.example.net
+  [[ "$output" == *"publish  $ADDRESS:6768 (recorded in ~/.config/orca-setup/docker/compose.yaml)"* ]]
+  # Another address re-creates the container.
+  : >"$FAKE_LOG"
+  run_setup --apply --role server --pairing-address devbox.example.net --publish-address 192.0.2.10
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qxF '      - "192.0.2.10:6768:6768/tcp"' "$COMPOSE"
+  grep -qx "docker compose --file $COMPOSE up --detach" "$FAKE_LOG"
+  [ "$(sed -n 2p "$SB/docker/ports")" = '192.0.2.10|6768|6768/tcp' ]
+  # A given address stays when the pairing address changes; a default (the pairing address) follows it.
+  run_setup --apply --role server --pairing-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qxF '  publish-address: "192.0.2.10"' "$COMPOSE"
+  run_setup --apply --role server --pairing-address "$ADDRESS" --publish-address "$ADDRESS"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  run_setup --apply --role server --pairing-address 192.0.2.10
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qxF '  publish-address: "192.0.2.10"' "$COMPOSE"
+  grep -qxF '      - "192.0.2.10:6768:6768/tcp"' "$COMPOSE"
 }
 
 # ------------------------------------------------------------------ image.lock
@@ -511,6 +634,7 @@ only_present() {
   [[ "$output" == *"Orca server image: locked ($IMAGE@sha256:$D1)"* ]]
   [[ "$output" == *'Newest image: same as image.lock'* ]]
   [[ "$output" == *'Orca server container: running'* ]]
+  [[ "$output" == *"Published endpoint: $ADDRESS:6768 (not reachable on this host's other addresses)"* ]]
   [[ "$output" == *'Mount ~/orca: ok'* ]]
   [[ "$output" == *'Mount ~/.local/share/orca-setup/home: ok'* ]]
   [[ "$output" == *'PRESENT codex'* ]]
@@ -530,7 +654,7 @@ only_present() {
     const fail = m => { console.error(m); process.exit(1); };
     if (r.schema !== "orca-setup-check/1" || r.missing !== 2) fail("schema or missing");
     if (r.server.form !== "docker" || !r.server.image.endsWith(process.argv[1]) || r.server.newest !== "sha256:" + process.argv[2]) fail("server");
-    if (r.server.container !== "running") fail("container");
+    if (r.server.container !== "running" || r.server.endpoint !== "203.0.113.10:6768") fail("container");
     if (!r.items.some(i => i.name === "Docker" && !i.counted)) fail("Docker item");
     if (!r.items.some(i => i.name === "Newest image" && i.state.startsWith("newer one available") && !i.counted)) fail("newest");
     if (r.device.distro !== "ubuntu 24.04") fail("device");
@@ -558,6 +682,39 @@ only_present() {
   rm -rf "$HOME/.codex"
   run_setup --check
   [[ "$output" == *'Mount ~/.codex: MISSING'* ]]
+}
+
+@test "--check counts a container published on another address, on every address or on the host network" {
+  image_tools
+  existing_docker
+  apply_server
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  fake_cmd gh 'exit 1' # not logged in
+  run_setup --check
+  [ "$status" -eq 2 ] || { echo "$output"; return 1; }
+  # Also on every address: counted.
+  printf 'orca-server_default\n%s|6768|6768/tcp\n0.0.0.0|6768|6768/tcp\n::|6768|6768/tcp\n' "$ADDRESS" >"$SB/docker/ports"
+  run_setup --check
+  [[ "$output" == *"Published endpoint: WRONG (published on $ADDRESS:6768, 0.0.0.0:6768, [::]:6768; expected $ADDRESS:6768 only; --apply re-creates it)"* ]]
+  [ "$status" -eq 3 ] || { echo "$output"; return 1; }
+  printf 'orca-server_default\n198.51.100.7|6768|6768/tcp\n%s|8080|8080/tcp\n' "$ADDRESS" >"$SB/docker/ports"
+  run_setup --check
+  [[ "$output" == *"Published endpoint: WRONG (published on 198.51.100.7:6768, $ADDRESS:8080 (to 8080/tcp); expected $ADDRESS:6768 only"* ]]
+  [ "$status" -eq 3 ] || { echo "$output"; return 1; }
+  printf 'orca-server_default\n' >"$SB/docker/ports"
+  run_setup --check
+  [[ "$output" == *"Published endpoint: WRONG (published on nothing; expected $ADDRESS:6768 only"* ]]
+  # A container from before the publish address, on the host network.
+  printf 'host\n' >"$SB/docker/ports"
+  run_setup --check --json
+  [ "$status" -eq 3 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'"name": "Published endpoint", "state": "WRONG (it runs on the host network: port 6768 answers on every host address; --apply re-creates it)", "counted": true'* ]]
+  [[ "$output" == *'"endpoint": "host"'* ]]
+  # A stopped container publishes nothing; only its state counts.
+  echo "exited $(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$COMPOSE")" >"$SB/docker/container"
+  run_setup --check --json
+  [[ "$output" != *'Published endpoint'* ]]
+  [[ "$output" == *'"endpoint": "none"'* ]]
 }
 
 @test "--check --role server before --apply counts what is missing, and changes nothing" {

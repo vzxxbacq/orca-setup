@@ -8,6 +8,7 @@ name: orca-server
 x-orca-setup:
   workdir: "@WORKDIR@"
   pairing-address: "@PAIRING_ADDRESS@"
+  publish-address: "@PUBLISH_ADDRESS@"
 services:
   orca-server:
     image: "@IMAGE@"
@@ -15,8 +16,13 @@ services:
     pull_policy: never
     container_name: orca-server
     command: ["orca-ide", "serve", "--supervise", "--no-pairing", "--port", "@PORT@", "--pairing-address", "@PAIRING_ADDRESS@"]
-    # The pairing address and port 6768 are the host's own; nothing is mapped.
-    network_mode: host
+    # The compose project's own bridge network. Port 6768 is published on one host address only, the private
+    # publish address (--publish-address): the host's other addresses (a public one included) do not answer on it.
+    # Nothing else is published.
+    ports:
+      - "@PUBLISH_ADDRESS@:@PORT@:@PORT@/tcp"
+    # The host's name instead of the container's id: Orca shows it to clients and records it in its profile locks.
+    hostname: "@HOSTNAME@"
     # Docker starts it again after a reboot, unless it was stopped on purpose (docker compose stop).
     restart: unless-stopped
     init: true

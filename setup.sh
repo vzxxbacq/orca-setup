@@ -35,7 +35,7 @@ TASK_SOURCES='linear'
 usage() {
   cat <<'EOF'
 Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [--pairing-address ADDRESS]
-                  [--workdir DIR] [--upgrade-image] [modules] [--task-source linear]
+                  [--publish-address IPV4] [--workdir DIR] [--upgrade-image] [modules] [--task-source linear]
        ./setup.sh --auth-gh | --auth-codex | --auth-claude | --auth-agy | --auth-linear
 
   --plan         Print what --apply would do on this device (default; read-only).
@@ -48,6 +48,10 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
   --pairing-address ADDRESS
                  Linux servers: the private IPv4 address or host name clients dial (Tailscale, LAN,
                  WireGuard). Required for --apply --role server on Linux; never 127.0.0.1 or a wildcard.
+  --publish-address IPV4
+                 Linux servers: this host's own private IPv4 address that Docker publishes the Orca port
+                 (6768) on; no other host address answers on it. Defaults to an IPv4 --pairing-address
+                 (required when that is a host name), and the last --apply's address is kept.
   --workdir DIR  Linux servers: the absolute directory for projects/ and workspaces/, mounted into the Orca
                  server container (default ~/orca, or the one the last --apply used).
   --upgrade-image
@@ -69,6 +73,7 @@ EOF
 action=''
 role=''
 pairing_address=''
+publish_address=''
 workdir=''
 upgrade_image=no
 task_source=''
@@ -93,6 +98,10 @@ while [ $# -gt 0 ]; do
     --pairing-address | --pairing-address=*)
       if [ "$1" = --pairing-address ]; then [ $# -ge 2 ] || die '--pairing-address needs an address'; pairing_address=$2; shift
       else pairing_address=${1#--pairing-address=}; fi ;;
+    --publish-address | --publish-address=*)
+      if [ "$1" = --publish-address ]; then [ $# -ge 2 ] || die '--publish-address needs an IPv4 address'; publish_address=$2; shift
+      else publish_address=${1#--publish-address=}; fi
+      [ -n "$publish_address" ] || die '--publish-address needs an IPv4 address' ;;
     --workdir | --workdir=*)
       if [ "$1" = --workdir ]; then [ $# -ge 2 ] || die '--workdir needs a directory'; workdir=$2; shift; else workdir=${1#--workdir=}; fi
       [ -n "$workdir" ] || die '--workdir needs a directory' ;;
@@ -122,6 +131,7 @@ auths=${auths# }
 [ "$check_json" = no ] || [ "$action" = check ] || die '--json works only with --check.'
 [ "$upgrade_image" = no ] || [ "$action" = apply ] || [ "$action" = plan ] || die '--upgrade-image works only with --apply (or --plan).'
 [ -z "$workdir" ] || [ "$action" != auth ] || die '--workdir does not apply to --auth-*.'
+[ -z "$publish_address" ] || [ "$action" != auth ] || die '--publish-address does not apply to --auth-*.'
 
 require_non_root
 setup_environment
@@ -153,15 +163,26 @@ if [ -n "$pairing_address" ]; then
   problem=$(pairing_address_problem "$pairing_address")
   [ -z "$problem" ] || die "--pairing-address $pairing_address is refused: $problem. Use the private address clients dial (README section 1)."
 fi
+if [ -n "$publish_address" ]; then
+  [ "$PLATFORM" = debian ] || die '--publish-address is for Linux servers (Orca in Docker); macOS runs the desktop app.'
+  [ "$role" != client ] || die '--publish-address is for --role server; a client runs no Orca server.'
+  ! in_container || die "--publish-address belongs to the Docker host: run ./setup.sh there (over SSH), not inside the $ORCA_SERVER_NAME container."
+  problem=$(publish_address_problem "$publish_address")
+  [ -z "$problem" ] || die "--publish-address $publish_address is refused: $problem. Use this host's own private IPv4 address that clients reach (README section 3.3.2)."
+fi
 if in_container; then
   [ "$role" != client ] || die "the $ORCA_SERVER_NAME container is a server; --role client does not apply here."
   [ -z "$workdir" ] && [ "$upgrade_image" = no ] ||
     die "--workdir and --upgrade-image belong to the Docker host: run ./setup.sh there (over SSH), not inside the $ORCA_SERVER_NAME container."
 fi
 
-# SERVER_HOST=yes: a Linux host whose Orca server runs in Docker (README section 6.7). WORKDIR is its --workdir.
+# SERVER_HOST=yes: a Linux host whose Orca server runs in Docker (README section 6.7). WORKDIR is its --workdir;
+# PUBLISH_ADDRESS the host address its port is published on (empty when there is none yet), and PUBLISH_PROBLEM why
+# Docker could not publish it there.
 SERVER_HOST=no
 WORKDIR=''
+PUBLISH_ADDRESS=''
+PUBLISH_PROBLEM=''
 if [ "$PLATFORM" = debian ] && ! in_container && [ "$(linux_role)" = server ]; then SERVER_HOST=yes; fi
 # An unsupported device is refused by every mode, with its reason, before anything here matters.
 if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported ]; then
@@ -175,6 +196,12 @@ if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported
   [ -z "$problem" ] || die "manifest/server-mounts.tsv (or its local overlay): $problem."
   problem=$(server_workdir_problem "$WORKDIR")
   [ -z "$problem" ] || die "--workdir $WORKDIR is refused: $problem."
+  PUBLISH_ADDRESS=$(server_publish_address)
+  if [ -n "$PUBLISH_ADDRESS" ]; then
+    PUBLISH_PROBLEM=$(publish_address_problem "$PUBLISH_ADDRESS")
+    [ -n "$PUBLISH_PROBLEM" ] || PUBLISH_PROBLEM=$(publish_address_local_problem "$PUBLISH_ADDRESS")
+  fi
+  [ -z "$publish_address" ] || [ -z "$PUBLISH_PROBLEM" ] || die "--publish-address $publish_address is refused: $PUBLISH_PROBLEM."
 elif [ "$SERVER_HOST" = no ] && { [ -n "$workdir" ] || [ "$upgrade_image" = yes ]; }; then
   [ "$PLATFORM" = debian ] || die '--workdir and --upgrade-image are for Linux servers (Orca in Docker); macOS runs the desktop app.'
   die '--workdir and --upgrade-image are for --role server on Linux; a client runs no Orca server.'
