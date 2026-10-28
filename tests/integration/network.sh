@@ -218,7 +218,9 @@ docker compose --file "$compose" config --quiet
 if request "$executor_name" "http://$bridge_address:18082/"; then fail 'executor proxy reached unlisted LAN port'; fi
 docker exec orca-network-fixture touch /tmp/no-proxy
 if request "$executor_name" 'http://198.51.100.10:18086/'; then fail 'executor proxy failure fell back to direct'; fi
-[ "$(execute curl --noproxy '*' -fsS --max-time 5 'http://internal.example:18081/')" = direct ] || fail 'executor proxy failure broke permitted LAN access'
+# With no executor.dns configured, DNS itself uses the unavailable proxy. Verify the
+# permitted LAN route by IP, without accidentally requiring a direct DNS fallback.
+[ "$(execute curl --noproxy '*' -fsS --max-time 5 "http://$bridge_address:18081/")" = direct ] || fail 'executor proxy failure broke permitted LAN access'
 docker exec orca-network-fixture rm /tmp/no-proxy
 
 # Switch only the executor to public direct networking; its private exceptions still apply.

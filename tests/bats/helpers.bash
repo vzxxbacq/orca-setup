@@ -307,7 +307,9 @@ case "$1" in
     ref=${!#}
     [ -r "$SB/docker/images/$(key "$ref")" ] || exit 1
     case " $* " in
-      *Config.Labels*) echo "${FAKE_EXEC_NETWORK_VERSION:-1}" ;;
+      *org.orca-setup.internal-ssh*) echo "${FAKE_SSH_VERSION:-0}" ;;
+      *org.orca-setup.executor-network*) echo "${FAKE_EXEC_NETWORK_VERSION:-1}" ;;
+      *Config.Labels*) echo '<no value>' ;;
       *RepoDigests* | *'.Id'*) cat "$SB/docker/images/$(key "$ref")" ;;
     esac ;;
   volume)
