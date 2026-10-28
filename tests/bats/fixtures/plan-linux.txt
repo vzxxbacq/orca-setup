@@ -79,4 +79,4 @@ Authentication (interactive, run on their own):
   --auth-agy      Start agy to sign in to Google; over SSH it prints a URL to open elsewhere and asks for the code. Needs an unlocked Secret Service keyring to keep the session.
   --auth-linear   Print Linear's API settings URL (open it on any device); read a key without echoing or logging it.
   --check         Show baseline and authentication readiness, without printing credentials.
-Existing installations and user configuration are preserved. SSH is never configured.
+Existing installations and user configuration are preserved. Host SSH is never configured.

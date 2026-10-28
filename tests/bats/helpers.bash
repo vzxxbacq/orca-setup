@@ -14,7 +14,7 @@ REAL_NODE=$(command -v node)
 REAL_PYTHON=$(command -v python3 || true)
 
 # Real utilities the scripts need; everything else must be faked explicitly.
-SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch cksum ln readlink rmdir'
+SANDBOX_UTILS='bash env awk sed grep cat tr sort head cut paste mktemp dirname basename rm mkdir chmod id node ls wc date cp uniq tail sleep touch cksum sha256sum shasum ln readlink rmdir'
 
 make_sandbox() {
   SB=$BATS_TEST_TMPDIR/sandbox
@@ -306,7 +306,10 @@ case "$1" in
   image)
     ref=${!#}
     [ -r "$SB/docker/images/$(key "$ref")" ] || exit 1
-    case " $* " in *RepoDigests* | *'.Id'*) cat "$SB/docker/images/$(key "$ref")" ;; esac ;;
+    case " $* " in
+      *Config.Labels*) echo "${FAKE_EXEC_NETWORK_VERSION:-1}" ;;
+      *RepoDigests* | *'.Id'*) cat "$SB/docker/images/$(key "$ref")" ;;
+    esac ;;
   volume)
     case "$2" in
       inspect) [ -d "$SB/docker/volumes/${!#}" ] ;;
@@ -315,6 +318,7 @@ case "$1" in
   container)
     [ "$2" = inspect ] && [ -r "$SB/docker/container" ] || exit 1
     name=${!#}
+    case "$name" in orca-[0-9]*-????????????-*) suffix=${name#orca-}; suffix=${suffix#*-}; suffix=${suffix#*-}; case "$suffix" in executor-gateway) name=$suffix ;; *) name=orca-$suffix ;; esac ;; esac
     case " $* " in
       *State.Health.Status*) [ ! -e "$SB/docker/unhealthy-$name" ] && echo healthy ;;
       *NetworkMode*NetworkSettings.Ports*) cat "$SB/docker/ports" 2>/dev/null ;;
@@ -328,7 +332,7 @@ case "$1" in
     echo "${log% }" >>"$FAKE_LOG"
     rm -f "$SB/docker/secret-changed"
     file=$3
-    if [ "${4:-}" = down ]; then
+    if [[ " $* " == *" down "* ]] || [ "${!#}" = down ]; then
       rm -f "$SB/docker/container" "$SB/docker/ports" "$SB/docker/isolated"
       exit 0
     fi
@@ -362,7 +366,8 @@ case "$1" in
     if [ -n "$secret_volume" ] && [ "${1:-}" = /opt/orca-setup/docker/proxy-secret.py ]; then
       cat >"$SB/docker/volumes/$secret_volume/auth"
       chmod 600 "$SB/docker/volumes/$secret_volume/auth"
-      cp "$SB/docker/volumes/$secret_volume/auth" "$SB/docker/secret-current"
+      case "$secret_volume" in *-executor) current=secret-current-executor ;; *) current=secret-current ;; esac
+      cp "$SB/docker/volumes/$secret_volume/auth" "$SB/docker/$current"
       touch "$SB/docker/secret-changed"
       exit 0
     fi
@@ -378,10 +383,14 @@ case "$1" in
         *) break ;;
       esac
     done
+    target=$1
+    case "$target" in orca-[0-9]*-????????????-*) suffix=${target#orca-}; suffix=${suffix#*-}; suffix=${suffix#*-}; case "$suffix" in executor-gateway) target=$suffix ;; *) target=orca-$suffix ;; esac ;; esac
+    set -- "$target" "${@:2}"
     if [ "$1" = orca-gateway ] || [ "$1" = executor-gateway ]; then
       if [ "${3:-}" = /opt/orca-setup/docker/proxy-secret.py ]; then
         desired=$(cat)
-        [ -f "$SB/docker/secret-current" ] && [ "$(cat "$SB/docker/secret-current")" = "$desired" ]
+        current=secret-current; [ "$1" != executor-gateway ] || current=secret-current-executor
+        [ -f "$SB/docker/$current" ] && [ "$(cat "$SB/docker/$current")" = "$desired" ]
         exit
       fi
       if [ "${3:-}" = check ] && [ -e "$SB/docker/secret-changed" ]; then exit 1; fi

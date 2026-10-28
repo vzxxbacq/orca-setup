@@ -97,6 +97,31 @@ jobs:
         shell: bash
         run: bash tests/integration/network.sh
 
+      - name: Process management and maintenance pairing recovery
+        timeout-minutes: 10
+        shell: bash
+        # Exercise this commit's freshly built image without host accounts or runner credentials.
+        run: |
+          env -i CI=true HOME="$HOME" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            ORCA_SETUP_TEST_IMAGE="$ORCA_SETUP_IMAGE" python3 tests/integration/tui-management.py
+      - name: Native Orca process restart without container restart
+        timeout-minutes: 10
+        shell: bash
+        # Exercise this commit's freshly built image without host accounts or runner credentials.
+        run: |
+          env -i CI=true HOME="$HOME" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            ORCA_SETUP_TEST_IMAGE="$ORCA_SETUP_IMAGE" python3 tests/integration/service-native.py
+      - name: Non-root mutual SSH and persistent interactive shells
+        timeout-minutes: 5
+        shell: bash
+        # Exercise this commit's freshly built image without host accounts or runner credentials.
+        run: |
+          env -i CI=true HOME="$HOME" USER="$USER" LOGNAME="$USER" SHELL=/bin/bash \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            ORCA_SETUP_TEST_IMAGE="$ORCA_SETUP_IMAGE" python3 tests/integration/internal-ssh.py
+
   publish:
     name: Publish ghcr.io/vzxxbacq/orca-server
     # Only pushes to main publish; a pull request never reaches this job.

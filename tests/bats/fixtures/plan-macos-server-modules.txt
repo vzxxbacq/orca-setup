@@ -54,4 +54,4 @@ Authentication (interactive, run on their own):
   --auth-agy      Start agy for interactive Google account sign-in.
   --auth-linear   Open Linear's API settings and read a key without echoing or logging it.
   --check         Show baseline and authentication readiness, without printing credentials.
-Existing installations and user configuration are preserved. SSH is never configured.
+Existing installations and user configuration are preserved. Host SSH is never configured.

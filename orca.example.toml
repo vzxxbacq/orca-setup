@@ -4,10 +4,13 @@
 # ./setup.sh --config orca.toml --apply
 
 [server]
+# Requires isolated networking and an image with internal SSH support. Peers share trust.
+internal_ssh = false
 role = "server"
 pairing_address = "server.example.com"
 publish_address = "172.20.0.2" # Must exist on a host interface; never use a wildcard.
 workdir = "~/orca"
+home_mount = "host" # Orca can read and write the full host home; executor home remains separate.
 image = "ghcr.io/vzxxbacq/orca-server:main"
 image_source = "registry"
 # For a prebuilt image already in Docker, set image_source = "local" and image to its tag.
@@ -33,6 +36,14 @@ transport = "https"
 tls_name = "cloudflare-dns.com"
 
 [executor]
+internet = "blocked" # blocked (default), direct, or proxy.
+# With internet = "proxy", omit [executor.proxy] to reuse Orca's proxy or define a separate endpoint below.
+# [executor.proxy]
+# type = "socks5"
+# address = "192.0.2.21"
+# port = 1081
+# username = "replace-on-device"
+# password = "replace-on-device"
 # dns = "172.20.1.53" # Optional private DNS; TCP/UDP 53 are allowed only to this address.
 # No general Internet access. Add only the private services required by execution commands.
 [[executor.allow]]

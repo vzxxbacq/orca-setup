@@ -179,6 +179,6 @@ use_copy() {
   done
   [ -z "$(awk '!/^[[:space:]]*(#|$)/' "$REPO_ROOT/manifest/server-limits.env")" ]
   # The image rows are Linux-only.
-  [ "$(manifest_select baseline.tsv debian image | cut -f1 | paste -sd ' ' -)" = 'xvfb nss-extrausers iptables iproute2 redsocks' ]
+  [ "$(manifest_select baseline.tsv debian image | cut -f1 | paste -sd ' ' -)" = 'xvfb nss-extrausers iptables iproute2 redsocks zsh openssh-client openssh-server' ]
   [ -z "$(manifest_select baseline.tsv macos image)" ]
 }

@@ -35,12 +35,16 @@ network_read_env() { # <file>; values deliberately never appear in validation er
       executor_dns) NET_EXECUTOR_DNS=$value ;;
       control_subnet) NET_CONTROL_SUBNET=$value ;;
       proxy_auth_file) NET_PROXY_AUTH_FILE=$value ;;
+      executor_mode) NET_EXEC_MODE=$value ;;
+      internal_ssh) NET_INTERNAL_SSH=$value ;;
       *) echo 'network policy contains an unknown key (only the documented keys are allowed)' >&2; return 1 ;;
     esac
   done <"$1"
 }
 
 network_validate() {
+  case "${NET_INTERNAL_SSH:-no}" in yes | no) ;; *) echo 'internal_ssh must be yes or no' >&2; return 1 ;; esac
+  case "${NET_EXEC_MODE:-blocked}" in blocked | direct | proxy) ;; *) echo 'executor_mode must be blocked, direct or proxy' >&2; return 1 ;; esac
   if [ -n "${NET_PROXY_AUTH_FILE:-}" ]; then
     [[ "$NET_PROXY_AUTH_FILE" =~ ^/[A-Za-z0-9._/+@-]+$ ]] ||
       { echo 'proxy_auth_file must be an absolute path without shell or YAML syntax' >&2; return 1; }

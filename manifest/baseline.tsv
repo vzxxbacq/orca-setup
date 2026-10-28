@@ -66,3 +66,6 @@ nss-extrausers	-	image	-	apt:libnss-extrausers
 iptables	iptables	image	-	apt:iptables
 iproute2	ip	image	-	apt:iproute2
 redsocks	redsocks	image	-	apt:redsocks
+zsh	zsh	image	-	apt:zsh
+openssh-client	ssh	image	-	apt:openssh-client
+openssh-server	/usr/sbin/sshd	image	-	apt:openssh-server

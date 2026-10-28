@@ -17,6 +17,10 @@
 # --upgrade-image moves to a newer image.
 set -euo pipefail
 repo=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
+# shellcheck source=lib/orca-server.sh
+. "$repo/lib/orca-server.sh"
+project_name=$(server_project_name)
+server_name=$(server_container_name orca-server)
 work=$(mktemp -d)
 mode=${1:-}
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -51,7 +55,7 @@ state() {
     "$compose" "$lock" 2>/dev/null || true
   id -nG "$USER"
   ls -l /etc/systemd/system/*.target 2>/dev/null || true
-  [ "$mode" = client ] || docker inspect --format '{{.Id}} {{.Image}} {{.State.Status}}' orca-server
+  [ "$mode" = client ] || docker inspect --format '{{.Id}} {{.Image}} {{.State.Status}}' "$server_name"
 }
 
 # Pairing offers look like orca://pair?code=...; fail without printing the match.
@@ -71,7 +75,7 @@ docker_state() {
 # wait_runtime [container]: until the Orca runtime in the container (orca-server) answers (after a re-create).
 wait_runtime() {
   local waited=0
-  until docker exec "${1:-orca-server}" sh -c 'orca-ide status --json 2>/dev/null' >"$work/status.json" &&
+  until docker exec "${1:-$server_name}" sh -c 'orca-ide status --json 2>/dev/null' >"$work/status.json" &&
     node "$repo/lib/json.cjs" has result.runtime.reachable <"$work/status.json"; do
     [ "$waited" -lt 120 ] || fail 'the Orca runtime in the container is not reachable'
     sleep 2
@@ -168,28 +172,28 @@ else
   echo '::group::the Orca server container'
   [ "$(head -n 1 "$compose")" = '# orca-setup: Orca server container for this user' ] || fail 'compose.yaml is not the rendered one'
   grep -qxE "image=${ORCA_SETUP_IMAGE%:*}@sha256:[0-9a-f]{64}" "$lock" || fail 'image.lock does not hold the pulled digest'
-  [ "$(docker inspect --format '{{.State.Status}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.RestartPolicy.Name}} {{.HostConfig.Init}}' orca-server)" = \
-    'running orca-server_default true unless-stopped true' ] || fail 'the container does not run as rendered'
+  [ "$(docker inspect --format '{{.State.Status}} {{.HostConfig.NetworkMode}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.RestartPolicy.Name}} {{.HostConfig.Init}}' "$server_name")" = \
+    "running ${project_name}_default true unless-stopped true" ] || fail 'the container does not run as rendered'
   grep -qxF '  publish-address: "127.0.0.2"' "$compose" || fail 'compose.yaml does not record the publish address'
-  [ "$(docker exec orca-server cat /proc/sys/kernel/hostname)" = "$(cat /proc/sys/kernel/hostname)" ] ||
+  [ "$(docker exec "$server_name" cat /proc/sys/kernel/hostname)" = "$(cat /proc/sys/kernel/hostname)" ] ||
     fail "the container does not carry the host's name"
-  [ "$(docker exec orca-server id -u):$(docker exec orca-server id -g)" = "$(id -u):$(id -g)" ] || fail 'the container does not run as the runner user'
+  [ "$(docker exec "$server_name" id -u):$(docker exec "$server_name" id -g)" = "$(id -u):$(id -g)" ] || fail 'the container does not run as the runner user'
   # shellcheck disable=SC2016 # expanded in the container
-  [ "$(docker exec orca-server sh -c 'printf %s "$HOME"')" = "$HOME" ] || fail 'the container HOME is not the host home path'
-  docker exec orca-server sh -c '! command -v sudo && ! command -v docker' || fail 'sudo or docker exists in the container'
+  [ "$(docker exec "$server_name" sh -c 'printf %s "$HOME"')" = "$HOME" ] || fail 'the container HOME is not the host home path'
+  docker exec "$server_name" sh -c '! command -v sudo && ! command -v docker' || fail 'sudo or docker exists in the container'
   # shellcheck disable=SC2016 # expanded in the container
-  docker exec orca-server sh -c 'for tool in node pnpm uv python3.12 ruff codex claude dsh dsh-tui pi bun omp grok agy gh orca-ide gemini Xvfb pdftotext ffmpeg 7z adb fastboot marksman; do command -v "$tool" >/dev/null || { echo "missing in the image: $tool"; exit 1; }; done' ||
+  docker exec "$server_name" sh -c 'for tool in node pnpm uv python3.12 ruff codex claude dsh dsh-tui pi bun omp grok agy gh orca-ide gemini Xvfb pdftotext ffmpeg 7z adb fastboot marksman; do command -v "$tool" >/dev/null || { echo "missing in the image: $tool"; exit 1; }; done' ||
     fail 'the image lacks a tool'
   wait_runtime
-  docker logs orca-server >"$work/container.log" 2>&1
+  docker logs "$server_name" >"$work/container.log" 2>&1
   no_pairing_secret "$work/status.json" "$work/container.log"
   echo "status reply reachable; container log: $(wc -l <"$work/container.log") lines, no pairing URL"
-  check_published orca-server
+  check_published "$server_name"
   echo '::endgroup::'
 
   echo '::group::mounts survive a re-create'
   # shellcheck disable=SC2016 # expanded in the container
-  docker exec orca-server sh -c 'echo persisted >"$HOME/orca/projects/ci-persist" && echo home >"$HOME/ci-home-file"' ||
+  docker exec "$server_name" sh -c 'echo persisted >"$HOME/orca/projects/ci-persist" && echo home >"$HOME/ci-home-file"' ||
     fail 'cannot write into the mounted directories'
   docker compose --file "$compose" down
   docker compose --file "$compose" up --detach
@@ -198,12 +202,12 @@ else
   [ "$(stat -c %u:%g "$HOME/orca/projects/ci-persist")" = "$(id -u):$(id -g)" ] || fail 'the mounted file is not owned by the runner user'
   [ "$(cat "$HOME/.local/share/orca-setup/home/ci-home-file")" = home ] || fail "a file in the container's home did not persist"
   # shellcheck disable=SC2016 # expanded in the container
-  [ "$(docker exec orca-server sh -c 'cat "$HOME/orca/projects/ci-persist"')" = persisted ] || fail 'the container does not see the file'
+  [ "$(docker exec "$server_name" sh -c 'cat "$HOME/orca/projects/ci-persist"')" = persisted ] || fail 'the container does not see the file'
   for path in /opt/ci-outside /etc/ci-outside /usr/local/ci-outside /ci-outside; do
-    if docker exec orca-server sh -c "touch $path" 2>/dev/null; then fail "a write outside the mounts succeeded: $path"; fi
+    if docker exec "$server_name" sh -c "touch $path" 2>/dev/null; then fail "a write outside the mounts succeeded: $path"; fi
   done
   echo 'writes outside the mounts fail (read-only root filesystem)'
-  check_published orca-server
+  check_published "$server_name"
   echo '::endgroup::'
 
   echo '::group::the pairing command publishes the same way'
@@ -222,7 +226,7 @@ else
   docker stop orca-setup-ci-pairing
   (cd "$(dirname "$compose")" && docker compose start)
   wait_runtime
-  check_published orca-server
+  check_published "$server_name"
   echo '::endgroup::'
 
   echo '::group::modules and the preinstalled Docker'
@@ -264,7 +268,7 @@ grep -qx "missing $status" "$work/check-summary.txt" || fail '--check --json doe
 if [ "$mode" = server ]; then
   echo '::group::--upgrade-image'
   locked=$(sed -n 's/^image=//p' "$lock")
-  before=$(docker inspect --format '{{.Image}}' orca-server)
+  before=$(docker inspect --format '{{.Image}}' "$server_name")
   printf 'FROM %s\nLABEL org.orca-setup.ci=upgrade\n' "$locked" | docker build --tag "$ORCA_SETUP_IMAGE" -
   docker push "$ORCA_SETUP_IMAGE"
   "$repo/setup.sh" "${args[@]}" 2>&1 | tee "$work/third.log"
@@ -272,10 +276,10 @@ if [ "$mode" = server ]; then
   "$repo/setup.sh" "${args[@]}" --upgrade-image 2>&1 | tee "$work/upgrade.log"
   grep -qx BASELINE_DONE "$work/upgrade.log" || fail '--upgrade-image did not finish'
   ! grep -qx "image=$locked" "$lock" || fail '--upgrade-image kept the old digest'
-  [ "$(docker inspect --format '{{.Image}}' orca-server)" != "$before" ] || fail '--upgrade-image did not re-create the container'
+  [ "$(docker inspect --format '{{.Image}}' "$server_name")" != "$before" ] || fail '--upgrade-image did not re-create the container'
   wait_runtime
   [ "$(cat "$HOME/orca/projects/ci-persist")" = persisted ] || fail 'the mounted file did not survive the upgrade'
-  check_published orca-server
+  check_published "$server_name"
   no_pairing_secret "$work/third.log" "$work/upgrade.log"
   echo '::endgroup::'
 fi

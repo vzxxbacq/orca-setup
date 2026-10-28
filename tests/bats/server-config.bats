@@ -151,3 +151,131 @@ image_source = "local"
   grep -qF "image: \"$second\"" "$COMPOSE"
   ! grep -q '^docker pull' "$FAKE_LOG"
 }
+
+@test "host home is mounted for Orca while the executor retains only its separate home and workdir" {
+  mkdir -p "$SB/work"
+  mkdir -p "$HOME/.local/share/orca-setup/home/.agents"
+  printf 'existing data\n' >"$HOME/.local/share/orca-setup/home/.agents/preserved"
+  local resolved
+  resolved=$(cd "$SB/work" && pwd -P)
+  ln -s "$resolved" "$HOME/orca"
+  sed '/\[server\]/a\
+home_mount = "host"
+' "$CONFIG" >"$CONFIG.new"
+  cp "$CONFIG.new" "$CONFIG"
+  apply_config
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  local main executor
+  main=$(sed -n '/^  orca-server:/,/^  orca-gateway:/p' "$COMPOSE")
+  executor=$(sed -n '/^  orca-executor:/,/^networks:/p' "$COMPOSE")
+  [[ "$main" == *"source: \"$HOME\""* ]]
+  [[ "$main" == *"target: \"$HOME\""* ]]
+  [[ "$main" != *"source: \"$HOME/.local/share/orca-setup/home\""* ]]
+  [[ "$executor" == *"source: \"$HOME/.local/share/orca-setup/executor-home\""* ]]
+  [[ "$executor" != *"source: \"$HOME\""* ]]
+  [ "$(cat "$HOME/.local/share/orca-setup/home/.agents/preserved")" = 'existing data' ]
+}
+
+@test "host home with a custom workdir refuses to replace an existing host orca directory" {
+  mkdir -p "$HOME/orca"
+  printf 'existing data\n' >"$HOME/orca/preserved"
+  sed '/\[server\]/a\
+home_mount = "host"
+' "$CONFIG" >"$CONFIG.new"
+  cp "$CONFIG.new" "$CONFIG"
+  apply_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'requires an existing ~/orca symlink'* ]]
+  [ "$(cat "$HOME/orca/preserved")" = 'existing data' ]
+  [ ! -s "$FAKE_LOG" ]
+}
+
+@test "executor proxy uses an independent protected authentication volume and keeps secrets out of Compose" {
+  python3 - "$CONFIG" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+s = p.read_text().replace('[[executor.allow]]', '''[executor]
+internet = "proxy"
+[executor.proxy]
+type = "socks5"
+address = "192.0.2.21"
+port = 1081
+username = "separate-fixture"
+password = "FAKE-EXECUTOR-AUTH-SENTINEL"
+[[executor.allow]]''')
+p.write_text(s)
+PY
+  apply_config
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qF 'executor_mode=proxy' "$HOME/.config/orca-setup/docker/network/executor-policy.env"
+  grep -qF 'proxy_address=192.0.2.21' "$HOME/.config/orca-setup/docker/network/executor-policy.env"
+  grep -qF 'source: executor_proxy_auth' "$COMPOSE"
+  grep -qF 'cap_add: ["NET_ADMIN", "NET_BIND_SERVICE"]' "$COMPOSE"
+  ! grep -qE 'FAKE-EXECUTOR-AUTH-SENTINEL|FAKE-CONFIG-AUTH-SENTINEL|separate-fixture' "$COMPOSE" "$FAKE_LOG"
+  : >"$FAKE_LOG"
+  apply_config
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  ! grep -q '^docker compose ' "$FAKE_LOG"
+  python3 - "$CONFIG" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('FAKE-EXECUTOR-AUTH-SENTINEL', 'FAKE-ROTATED-EXECUTOR-AUTH'))
+PY
+  run_setup --config "$CONFIG" --check --json
+  [[ "$output" == *'STALE (private authentication differs or executor gateway is unreachable'* ]]
+  apply_config
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -q 'up --detach --force-recreate' "$FAKE_LOG"
+  ! grep -qE 'FAKE-EXECUTOR-AUTH-SENTINEL|FAKE-ROTATED-EXECUTOR-AUTH' "$COMPOSE" "$FAKE_LOG"
+}
+
+@test "TUI refuses noninteractive use without writing files or invoking Docker" {
+  run_setup --tui --config "$CONFIG"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'requires an interactive terminal'* ]]
+  [ ! -d "$HOME/.config/orca-setup" ]
+  [ ! -s "$FAKE_LOG" ]
+}
+
+@test "executor direct mode uses direct DNS and is included in policy drift" {
+  python3 - "$CONFIG" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('[[executor.allow]]', '[executor]\ninternet = "direct"\n[[executor.allow]]'))
+PY
+  apply_config
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  grep -qF 'executor_mode=direct' "$HOME/.config/orca-setup/docker/network/executor-policy.env"
+  grep -qF 'nameserver 1.1.1.1' "$HOME/.config/orca-setup/docker/network/executor-resolv.conf"
+  ! sed -n '/^  executor-gateway:/,/^  orca-executor:/p' "$COMPOSE" | grep -qF /run/secrets
+}
+
+@test "old images refuse executor internet modes before replacing a running stack" {
+  python3 - "$CONFIG" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1]); p.write_text(p.read_text().replace('[[executor.allow]]', '[executor]\ninternet = "direct"\n[[executor.allow]]'))
+PY
+  export FAKE_EXEC_NETWORK_VERSION=0
+  apply_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'does not support executor direct/proxy networking'* ]]
+  ! grep -q '^docker compose ' "$FAKE_LOG"
+}
+
+@test "mutual SSH is explicit, planned without writes, and refused on an older locked image" {
+  sed '/\[server\]/a\
+internal_ssh = true
+' "$CONFIG" >"$CONFIG.new"
+  cp "$CONFIG.new" "$CONFIG"
+  run_setup --config "$CONFIG"
+  [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+  [[ "$output" == *'mutual control-network SSH on port 2222'* ]]
+  [ ! -d "$HOME/.config/orca-setup/docker/ssh" ]
+  [ ! -s "$FAKE_LOG" ]
+  apply_config
+  [ "$status" -ne 0 ]
+  [[ "$output" == *'internal SSH requires a newer image'* ]]
+  ! grep -q 'docker compose .*up' "$FAKE_LOG"
+}

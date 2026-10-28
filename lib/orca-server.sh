@@ -5,12 +5,12 @@
 # on one private host address only (the publish address), with a read-only root filesystem; its home is a dedicated
 # host directory, and the work, Orca data and agent directories of manifest/server-mounts.tsv are bind-mounted at the
 # same paths. The image digest is locked in image.lock; only --upgrade-image moves it.
-# The server runs with --no-pairing and setup.sh never asks for a pairing offer, so no pairing URL is ever printed,
-# logged or written by these scripts. Uses setup.sh's pairing_address, publish_address, PUBLISH_ADDRESS,
+# The server runs with --no-pairing; unattended setup never asks for a pairing offer. The explicit TUI pairing
+# action is implemented separately in server-manage.py. Uses setup.sh's pairing_address, publish_address, PUBLISH_ADDRESS,
 # PUBLISH_PROBLEM, workdir, upgrade_image, task_source, modules, check_json and report.
 
 ORCA_SERVER_PORT=6768
-ORCA_SERVER_NAME=orca-server # compose project, service and container
+ORCA_SERVER_NAME=orca-server # resolved for the current deployment by setup.sh
 ORCA_SERVER_IMAGE=ghcr.io/vzxxbacq/orca-server:main
 ORCA_SERVER_ROOT=/opt/orca-setup # this repository's scripts in the image
 # Modules the image has built in, and modules that only the host can run.
@@ -20,6 +20,29 @@ LEGACY_SERVE_UNIT_MARKER='# orca-setup: Orca server for this user'
 server_config_dir() { printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/orca-setup/docker"; }
 server_compose_file() { printf '%s/compose.yaml\n' "$(server_config_dir)"; }
 server_lock_file() { printf '%s/image.lock\n' "$(server_config_dir)"; }
+# Keep existing project names; new deployments use a stable user/path namespace.
+server_project_name() {
+  local file project digest
+  file=$(server_compose_file)
+  if [ -r "$file" ] && [ "$(head -n 1 "$file")" = '# orca-setup: Orca server container for this user' ]; then
+    project=$(sed -n 's/^name: \([a-z0-9][a-z0-9_-]*\)$/\1/p' "$file" | head -n 1)
+    if [ -n "$project" ]; then printf '%s\n' "$project"; return; fi
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest=$(printf '%s' "$(server_config_dir)" | sha256sum) || return 1
+  else
+    digest=$(printf '%s' "$(server_config_dir)" | shasum -a 256) || return 1
+  fi
+  printf 'orca-%s-%.12s\n' "$(id -u)" "$digest"
+}
+
+server_container_name() { # <Compose service>
+  local project
+  project=$(server_project_name)
+  if [ "$project" = orca-server ]; then printf '%s\n' "$1"
+  else printf '%s-%s\n' "$project" "${1#orca-}"; fi
+}
+
 # The container's home directory on the host.
 server_home() { printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/home"; }
 # ORCA_SETUP_IMAGE replaces the published image for tests and CI only.
@@ -144,6 +167,12 @@ server_mounts() {
 # server_dirs <workdir>: "path<TAB>description" of every host directory the container needs, in creation order.
 server_dirs() {
   local path contents
+  if [ "${CONFIG_HOME_MOUNT:-dedicated}" = host ]; then
+    printf '%s\t%s\n' "$1" 'shared work directory' "$1/projects" 'project checkouts' "$1/workspaces" "Orca's worktrees"
+    printf '%s\t%s\n' "$HOME/.orca" 'Orca user data and pairing role' "$HOME" 'your full host home directory (writable in Orca)'
+    printf '%s\t%s\n' "$(server_overlay_dir)" 'a copy of manifest/local/, read-only in the container'
+    return
+  fi
   while IFS=$'\t' read -r path contents; do
     printf '%s\t%s\n' "$path" "$contents"
     [ "$path" != "$1" ] || printf '%s\t%s\n' "$path/projects" 'project checkouts' "$path/workspaces" "Orca's worktrees"
@@ -166,12 +195,20 @@ server_mount_points() {
 # --workdir, ~/orca in the container's home is a link to it.
 server_orca_link() { printf '%s/orca\n' "$(server_home)"; }
 
+server_host_workdir_link_matches() {
+  [ -L "$HOME/orca" ] && [ -d "$HOME/orca" ] && [ -d "$1" ] &&
+    [ "$(CDPATH='' cd -- "$HOME/orca" && pwd -P)" = "$(CDPATH='' cd -- "$1" && pwd -P)" ]
+}
+
 # ---------------------------------------------------------------- compose.yaml
 
 # server_compose_value <key>: an option recorded in the rendered compose.yaml (x-orca-setup), empty without one.
 server_compose_value() {
-  [ -r "$(server_compose_file)" ] || return 0
-  sed -n "s/^  $1: \"\\(.*\\)\"\$/\\1/p" "$(server_compose_file)" | head -n 1
+  local file
+  file=$(server_compose_file)
+  if [ ! -r "$file" ] && [ "$1" = config-file ]; then file="$(server_config_dir)/compose.uninstalled.yaml"; fi
+  [ -r "$file" ] || return 0
+  sed -n "s/^  $1: \"\\(.*\\)\"\$/\\1/p" "$file" | head -n 1
 }
 
 # server_publish_address: the host address port 6768 is published on. --publish-address; else the recorded one, which
@@ -235,9 +272,21 @@ server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 server_compose_render() {
   local volumes limits path server_network executor_volumes='' network_dir='' policy_sum=''
   local mode=${NETWORK_MODE:-direct} server_hostname server_environment='' auth_service='' auth_definition='' auth_volume=''
-  volumes=$(server_volume "$(server_home)" "$HOME"
-    while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")
+  local executor_auth_volume='' executor_auth_service='' executor_caps='["NET_ADMIN"]' volumes_definition='' secrets_definition=''
+  volumes=$(
+    if [ "${CONFIG_HOME_MOUNT:-dedicated}" = host ]; then
+      server_volume "$HOME" "$HOME"
+      if [[ "$2" != "$HOME/"* ]]; then server_volume "$2" "$2"; fi
+    else
+      server_volume "$(server_home)" "$HOME"
+      while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")
+    fi
+    server_volume "$(server_config_dir)/orca-service.py" /opt/orca-service.py ro
     server_volume "$(server_overlay_dir)" "$ORCA_SERVER_ROOT/manifest/local" ro) || return 1
+  if [ "${CONFIG_INTERNAL_SSH:-no}" = yes ]; then
+    volumes="$volumes
+$(server_volume "$(server_config_dir)/ssh/orca" /run/orca-ssh ro)"
+  fi
   limits=$(server_limit_lines) || return 1
   if [ "$mode" = isolated ]; then
     server_network_load || return 1
@@ -247,16 +296,33 @@ $(server_volume "$network_dir/orca-resolv.conf" /etc/resolv.conf ro)"
     executor_volumes=$(server_volume "${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/executor-home" "$HOME"
       server_volume "$2" "$2"
       server_volume "$network_dir/executor-resolv.conf" /etc/resolv.conf ro)
+    if [ "${CONFIG_INTERNAL_SSH:-no}" = yes ]; then
+      executor_volumes="$executor_volumes
+$(server_volume "$(server_config_dir)/ssh/executor" /run/orca-ssh ro)"
+    fi
     policy_sum=$(printf '%s\n' "$NET_PROXY_TYPE" "$NET_PROXY_ADDRESS" "$NET_PROXY_PORT" "$NET_DNS_ADDRESS" \
-      "$NET_DNS_TRANSPORT" "$NET_DNS_TLS_NAME" "$NET_EXECUTOR_DNS" "$NET_CONTROL_SUBNET" "$NET_RULES" "$NET_PROXY_AUTH_FILE" | \
+      "$NET_DNS_TRANSPORT" "$NET_DNS_TLS_NAME" "$NET_EXECUTOR_DNS" "$NET_CONTROL_SUBNET" "$NET_RULES" "$NET_PROXY_AUTH_FILE" \
+      "$NET_EXEC_INTERNET" "$NET_EXEC_PROXY_TYPE" "$NET_EXEC_PROXY_ADDRESS" "$NET_EXEC_PROXY_PORT" "$NET_EXEC_PROXY_AUTH_FILE" | \
       cksum | awk '{ print $1 "-" $2 }')
     if [ "${CONFIG_INLINE_AUTH:-no}" = yes ]; then
       auth_volume=$'      - type: volume\n        source: orca_proxy_auth\n        target: /run/secrets\n        read_only: true'
-      auth_definition=$(printf 'volumes:\n  orca_proxy_auth:\n    external: true\n    name: "%s"' "$(server_config_secret_volume)")
+      volumes_definition=$(printf '  orca_proxy_auth:\n    external: true\n    name: "%s"' "$(server_config_secret_volume)")
     elif [ -n "$NET_PROXY_AUTH_FILE" ]; then
       auth_service=$'    secrets:\n      - orca_proxy_auth'
-      auth_definition=$(printf 'secrets:\n  orca_proxy_auth:\n    file: "%s"' "$NET_PROXY_AUTH_FILE")
+      secrets_definition=$(printf '  orca_proxy_auth:\n    file: "%s"' "$NET_PROXY_AUTH_FILE")
     fi
+    if [ "$NET_EXEC_INTERNET" = proxy ]; then
+      executor_caps='["NET_ADMIN", "NET_BIND_SERVICE"]'
+      if [ "${CONFIG_EXEC_INLINE_AUTH:-no}" = yes ]; then
+        executor_auth_volume=$'      - type: volume\n        source: executor_proxy_auth\n        target: /run/secrets\n        read_only: true'
+        volumes_definition="${volumes_definition}${volumes_definition:+$'\n'}$(printf '  executor_proxy_auth:\n    external: true\n    name: "%s"' "$(server_config_secret_volume executor)")"
+      elif [ -n "$NET_EXEC_PROXY_AUTH_FILE" ]; then
+        executor_auth_service=$'    secrets:\n      - source: executor_proxy_auth\n        target: orca_proxy_auth'
+        secrets_definition="${secrets_definition}${secrets_definition:+$'\n'}$(printf '  executor_proxy_auth:\n    file: "%s"' "$NET_EXEC_PROXY_AUTH_FILE")"
+      fi
+    fi
+    [ -z "$volumes_definition" ] || auth_definition=$(printf 'volumes:\n%s' "$volumes_definition")
+    [ -z "$secrets_definition" ] || auth_definition="${auth_definition}${auth_definition:+$'\n'}$(printf 'secrets:\n%s' "$secrets_definition")"
     server_network=$(server_network_server_lines "$4")
     server_hostname=''
     server_environment=$(printf '      ORCA_EXECUTOR_HOST: "%s"\n' "$NET_EXECUTOR_IP"
@@ -266,14 +332,17 @@ $(server_volume "$network_dir/orca-resolv.conf" /etc/resolv.conf ro)"
     server_hostname=$(printf '    hostname: "%s"' "$(uname -n)")
   fi
   # Values go through ENVIRON: awk -v would interpret backslashes and cannot hold several lines everywhere.
-  RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_PUBLISH_ADDRESS=$4 RENDER_CONFIG=$5 \
+  RENDER_PROCESS_MANAGER=$(cksum < "$ORCA_SETUP_ROOT/docker/orca-service.py" | awk '{ print $1 "-" $2 }') RENDER_INTERNAL_SSH=${CONFIG_INTERNAL_SSH:-no} RENDER_IMAGE=$1 RENDER_WORKDIR=$2 RENDER_PAIRING_ADDRESS=$3 RENDER_PUBLISH_ADDRESS=$4 RENDER_CONFIG=$5 \
     RENDER_PORT=$ORCA_SERVER_PORT RENDER_HOSTNAME=$(uname -n) RENDER_UID=$(id -u) RENDER_GID=$(id -g) RENDER_HOME=$HOME \
     RENDER_USER=$(id -un) RENDER_VOLUMES=$volumes RENDER_LIMITS=$limits RENDER_NETWORK_MODE=$mode \
     RENDER_SERVER_NETWORK=$server_network RENDER_NETWORK_DIR=$network_dir RENDER_EXECUTOR_VOLUMES=$executor_volumes \
     RENDER_CONTROL_SUBNET=${NET_CONTROL_SUBNET:-} RENDER_ORCA_IP=${NET_ORCA_IP:-} RENDER_EXECUTOR_IP=${NET_EXECUTOR_IP:-} \
     RENDER_SERVER_HOSTNAME=$server_hostname RENDER_SERVER_ENVIRONMENT=$server_environment \
     RENDER_PROXY_AUTH_SERVICE=$auth_service RENDER_PROXY_AUTH_DEFINITION=$auth_definition RENDER_PROXY_AUTH_VOLUME=$auth_volume \
-    RENDER_CONFIG_FILE=${CONFIG_FILE:-} \
+    RENDER_EXECUTOR_PROXY_AUTH_VOLUME=$executor_auth_volume RENDER_EXECUTOR_PROXY_AUTH_SERVICE=$executor_auth_service RENDER_EXECUTOR_CAPS=$executor_caps \
+    RENDER_PROJECT=$(server_project_name) RENDER_SERVER_NAME=$(server_container_name orca-server) \
+    RENDER_GATEWAY_NAME=$(server_container_name orca-gateway) RENDER_EXECUTOR_GATEWAY_NAME=$(server_container_name executor-gateway) \
+    RENDER_EXECUTOR_NAME=$(server_container_name orca-executor) RENDER_CONFIG_FILE=${CONFIG_FILE:-} \
     RENDER_EXECUTOR_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/executor-home" RENDER_POLICY_SUM=$policy_sum awk '
     /^@VOLUMES@$/ { print ENVIRON["RENDER_VOLUMES"]; next }
     /^@LIMITS@$/ { if (ENVIRON["RENDER_LIMITS"] != "") print ENVIRON["RENDER_LIMITS"]; next }
@@ -471,6 +540,14 @@ server_dirs_apply() {
     step mkdir -p "$path"
     created=$((created + 1))
   done < <(server_dirs "$1")
+  if [ "${CONFIG_HOME_MOUNT:-dedicated}" = host ]; then
+    if [ "$1" != "$HOME/orca" ]; then
+      server_host_workdir_link_matches "$1" ||
+        die 'host home mounting with a custom workdir requires an existing ~/orca symlink to that workdir; existing home data was not changed.'
+    fi
+    [ "$created" -gt 0 ] || info 'PRESENT directories for the container (owned by you)'
+    return
+  fi
   link=$(server_orca_link)
   if [ "$1" = "$HOME/orca" ]; then
     if [ -L "$link" ]; then step rm "$link"; created=$((created + 1)); fi
@@ -497,7 +574,7 @@ server_dirs_plan() {
     else state='present '; fi
     info "  $state $(tilde "$path") ($description)"
   done < <(server_dirs "$1")
-  [ "$1" = "$HOME/orca" ] ||
+  [ "${CONFIG_HOME_MOUNT:-dedicated}" = host ] || [ "$1" = "$HOME/orca" ] ||
     info "  link     $(tilde "$(server_orca_link)") -> $1 (Orca's workspace directory stays ~/orca/workspaces in the container)"
 }
 
@@ -531,11 +608,18 @@ server_setup_args() {
 server_container_apply() { # <workdir>
   local compose rendered state config arg waited=0 limit=${ORCA_SETUP_SERVE_WAIT:-120} args=()
   compose=$(server_compose_file)
+  mkdir -p "$(dirname "$compose")"
+  [ ! -L "$(dirname "$compose")/orca-service.py" ] || die 'process manager file must not be a symbolic link.'
+  if [ ! -f "$(dirname "$compose")/orca-service.py" ] || [ "$(cat "$ORCA_SETUP_ROOT/docker/orca-service.py")" != "$(cat "$(dirname "$compose")/orca-service.py")" ]; then
+    info "+ write $(tilde "$(dirname "$compose")/orca-service.py") (container process manager)"
+    cat "$ORCA_SETUP_ROOT/docker/orca-service.py" >"$(dirname "$compose")/orca-service.py"
+    chmod 644 "$(dirname "$compose")/orca-service.py"
+  fi
   rendered=$(server_compose "$SERVER_IMAGE" "$1" "$pairing_address" "$PUBLISH_ADDRESS") || exit 1
   config=$(printf '%s\n' "$rendered" | sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' | head -n 1)
   if [ -f "$compose" ] && [ "$NETWORK_MODE" != "$NETWORK_PREVIOUS_MODE" ]; then
     # Release the private published port before moving it between Orca and its gateway. Bind mounts are retained.
-    dk_step compose --file "$compose" down || die 'could not stop the previous network topology.'
+    dk_step compose --file "$compose" --project-name "$(server_project_name)" down || die 'could not stop the previous network topology.'
   fi
   if [ -f "$compose" ] && [ "$(cat "$compose")" = "$rendered" ]; then info "PRESENT $(tilde "$compose")"
   else
@@ -549,13 +633,13 @@ server_container_apply() { # <workdir>
   else
     if [ "$NETWORK_MODE" = isolated ]; then
       # Applications must join the new donor namespaces when a gateway is replaced or restarted.
-      dk_step compose --file "$compose" up --detach --force-recreate --remove-orphans ||
+      dk_step compose --file "$compose" --project-name "$(server_project_name)" up --detach --force-recreate --remove-orphans ||
         die "could not start the isolated stack; check gateway logs and use --upgrade-image if the image predates isolation."
     else
       if [ "$NETWORK_PREVIOUS_MODE" = isolated ]; then
-        dk_step compose --file "$compose" up --detach --remove-orphans || die "docker compose could not start $ORCA_SERVER_NAME."
+        dk_step compose --file "$compose" --project-name "$(server_project_name)" up --detach --remove-orphans || die "docker compose could not start $ORCA_SERVER_NAME."
       else
-        dk_step compose --file "$compose" up --detach || die "docker compose could not start $ORCA_SERVER_NAME."
+        dk_step compose --file "$compose" --project-name "$(server_project_name)" up --detach || die "docker compose could not start $ORCA_SERVER_NAME."
       fi
     fi
   fi
@@ -609,18 +693,50 @@ server_plan() { # <workdir>
   server_dirs_plan "$1"
   server_image_plan
   server_network_plan
+  if [ "${CONFIG_INTERNAL_SSH:-no}" = yes ]; then
+    info "  ssh      initialize deployment-only identities in $(tilde "$(server_config_dir)/ssh"); mount each identity only in its container"
+    info '           allow mutual control-network SSH on port 2222; no host ports; remote commands use the destination network'
+  fi
   info 'Container (--apply):'
+  info "  write    $(tilde "$(server_config_dir)/orca-service.py") (persistent process manager; mounted read-only)"
   info '  check    the pairing role, read-only inside the image, before the container starts'
   if [ -f "$(server_compose_file)" ]; then info "  render   $(tilde "$(server_compose_file)") (rewritten when it differs)"
   else info "  write    $(tilde "$(server_compose_file)")"; fi
-  info "           $ORCA_SERVER_NAME: user $(id -u):$(id -g), home $(tilde "$HOME") from $(tilde "$(server_home)"), host name $(uname -n),"
+  if [ "${CONFIG_HOME_MOUNT:-dedicated}" = host ]; then
+    info "           $ORCA_SERVER_NAME: user $(id -u):$(id -g), full host home $(tilde "$HOME"), host name $(uname -n),"
+  else
+    info "           $ORCA_SERVER_NAME: user $(id -u):$(id -g), home $(tilde "$HOME") from $(tilde "$(server_home)"), host name $(uname -n),"
+  fi
   info '           read-only root filesystem with a tmpfs /tmp, restart unless-stopped, no sudo and no Docker inside'
   info "  network  the compose project's bridge network; only port $ORCA_SERVER_PORT is published, on ${PUBLISH_ADDRESS:-the publish address} alone"
   info "           Docker's bridge networking turns on IPv4 forwarding and adds its own iptables rules; when it turns"
   info '           forwarding on itself it also sets the iptables FORWARD policy to DROP (README section 8)'
   info "  start    docker compose up --detach (when not running as rendered); wait until \`orca-ide status\` in it reaches the runtime"
   info "  orca     skills and settings inside it: docker exec $ORCA_SERVER_NAME $ORCA_SERVER_ROOT/setup.sh $(server_setup_args no --apply | paste -sd ' ' -)"
-  info '  pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)'
+  info '  pairing  TUI maintenance pairing shows a link/QR; Orca sessions may stop, containers stay running (README section 3.3.2)'
+}
+
+server_internal_ssh_ready() {
+  dk exec "$(server_container_name orca-server)" ssh -o ConnectTimeout=5 executor true >/dev/null 2>&1 &&
+    dk exec "$(server_container_name orca-executor)" ssh -o ConnectTimeout=5 orca true >/dev/null 2>&1
+}
+
+server_internal_ssh_apply() {
+  [ "${CONFIG_INTERNAL_SSH:-no}" = yes ] || return 0
+  local supported directory
+  supported=$(dk image inspect --format '{{index .Config.Labels "org.orca-setup.internal-ssh"}}' "$SERVER_IMAGE") || return 1
+  [ "$supported" = 1 ] || die 'internal SSH requires a newer image with shell/SSH support; select a compatible image before applying.'
+  directory="$(server_config_dir)/ssh"
+  [ ! -L "$directory" ] || die 'SSH identity directory must not be a symbolic link.'
+  mkdir -p "$directory"
+  case "$(cd "$directory" && pwd -P)/" in
+    "$ORCA_SETUP_ROOT/"*) die 'SSH identities must be outside the source checkout; choose an external XDG_CONFIG_HOME.' ;;
+  esac
+  chmod 700 "$directory"
+  info '+ initialize persistent deployment-only SSH identities (values hidden; existing identities retained)'
+  dk run --rm --network none --read-only --tmpfs /tmp --user "$(id -u):$(id -g)" --env HOME=/tmp \
+    --volume "$directory:/identities" "$SERVER_IMAGE" python3 /opt/orca-setup/docker/ssh-identity.py \
+    /identities "$(id -un)" "$NET_ORCA_IP" "$NET_EXECUTOR_IP" || die 'internal SSH initialization failed.'
 }
 
 server_apply() { # <workdir>
@@ -641,9 +757,18 @@ server_apply() { # <workdir>
   server_dirs_apply "$1"
   server_overlay_apply
   server_image_apply
+  if [ "$NETWORK_MODE" = isolated ] && [ "$NET_EXEC_INTERNET" != blocked ] &&
+    ! server_network_image_supports_executor "$SERVER_IMAGE"; then
+    die 'the selected image does not support executor direct/proxy networking; build a newer image or explicitly use --upgrade-image.'
+  fi
   server_role_check
+  server_internal_ssh_apply
   server_network_apply
   server_container_apply "$1"
+  if [ "${CONFIG_INTERNAL_SSH:-no}" = yes ]; then
+    server_internal_ssh_ready || die 'internal SSH did not become ready in both directions; inspect the container SSH service.'
+    info 'PRESENT mutual internal SSH (non-root, port 2222, no host publication)'
+  fi
   for name in $modules; do
     case "$name" in
       containers) info 'PRESENT module containers (Docker Engine is part of the Linux server baseline)' ;;
@@ -671,7 +796,7 @@ server_newest_digest() {
 # for every port it publishes (a running container's actual bindings).
 server_published() {
   local endpoint_container=$ORCA_SERVER_NAME
-  [ "$NETWORK_MODE" != isolated ] || endpoint_container=orca-gateway
+  [ "$NETWORK_MODE" != isolated ] || endpoint_container=$(server_container_name orca-gateway)
   # shellcheck disable=SC2016 # a Go template, not shell expansions
   dk container inspect --format '{{.HostConfig.NetworkMode}}{{println}}{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{.HostIp}}|{{.HostPort}}|{{$port}}{{println}}{{end}}{{end}}' \
     "$endpoint_container" 2>/dev/null
@@ -740,6 +865,10 @@ server_check_host() {
   if [ "$NETWORK_MODE" = isolated ]; then
     SERVER_INFO+=("network-mode"$'\t'isolated)
     server_network_check
+    if [ "${CONFIG_INTERNAL_SSH:-no}" = yes ]; then
+      if server_internal_ssh_ready; then report healthy 'Mutual internal SSH'
+      else report UNREACHABLE 'Mutual internal SSH'; fi
+    fi
   fi
   while IFS=$'\t' read -r path _; do
     if [ ! -e "$path" ]; then report MISSING "Mount $(tilde "$path")"

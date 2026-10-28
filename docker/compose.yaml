@@ -2,23 +2,24 @@
 # Rendered by `./setup.sh --apply --role server` from docker/compose.yaml (README section 6.7) into
 # ~/.config/orca-setup/docker/compose.yaml; rerun it to change this file instead of editing it. The first line marks
 # the file as orca-setup's, and x-orca-setup records the options it was rendered with.
-# --no-pairing: the server never creates a pairing offer, so nothing secret reaches its log. Pair a client from an
-# interactive `docker compose run --rm` instead (README section 3.3.2).
-name: orca-server
+# --no-pairing: normal service never creates an offer. Pair a client using
+# interactive maintenance pairing in the TUI instead (README section 3.3.2).
+name: @PROJECT@
 x-orca-setup:
   workdir: "@WORKDIR@"
   pairing-address: "@PAIRING_ADDRESS@"
   publish-address: "@PUBLISH_ADDRESS@"
   network-mode: "@NETWORK_MODE@"
   network-policy: "@POLICY_SUM@"
+  process-manager: "@PROCESS_MANAGER@"
   config-file: "@CONFIG_FILE@"
 services:
   orca-server:
     image: "@IMAGE@"
     # The image is pulled and locked by setup.sh (image.lock); Compose never pulls or upgrades it.
     pull_policy: never
-    container_name: orca-server
-    command: ["orca-ide", "serve", "--supervise", "--no-pairing", "--port", "@PORT@", "--pairing-address", "@PAIRING_ADDRESS@"]
+    container_name: @SERVER_NAME@
+    command: ["python3", "/opt/orca-service.py", "run", "bash", "-c", ". /opt/orca-setup/lib/detect.sh; cli=$$(detect_orca_cli); exec \"$$cli\" \"$$@\"", "orca-service", "serve", "--supervise", "--no-pairing", "--port", "@PORT@", "--pairing-address", "@PAIRING_ADDRESS@"]
     # The compose project's own bridge network. Port 6768 is published on one host address only, the private
     # publish address (--publish-address): the host's other addresses (a public one included) do not answer on it.
     # Nothing else is published.
@@ -37,6 +38,7 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     environment:
+      ORCA_INTERNAL_SSH: "@INTERNAL_SSH@"
       HOME: "@HOME@"
       USER: "@USER@"
       LOGNAME: "@USER@"
@@ -47,16 +49,16 @@ services:
 @SERVER_ENVIRONMENT@
     labels:
       org.orca-setup.config: "@CONFIG@"
-    # The log stays next to the container whatever the daemon's default driver is, so the removed container of a
-    # `docker compose run --rm` (pairing) takes its log with it; journald, syslog or a remote driver would keep it.
+    # Bound normal-service logs locally. Maintenance pairing output uses a private socket to the terminal
+    # and never enters this log driver.
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 @LIMITS@
-    # Your home directory in the container is a dedicated host directory; the rest are the same paths as on the host
-    # (manifest/server-mounts.tsv). A missing host directory is an error, never created by Docker as root.
+    # The selected host or dedicated home and any additional directories are bind-mounted at their container paths.
+    # A missing host directory is an error, never created by Docker as root.
     volumes:
 @VOLUMES@
 @NETWORK_SERVICES@

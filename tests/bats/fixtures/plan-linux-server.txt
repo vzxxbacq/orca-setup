@@ -1,5 +1,5 @@
 orca-setup plan (read-only; nothing is changed)
-Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide (in the orca-server container)
+Device: ubuntu 24.04 x86_64, package manager: apt, desktop: no, Orca CLI: orca-ide (in the <server-container> container)
 Pairing role: server (detected: none); accepts runtime pairings, never saves environments
 sudo: present; --apply runs only the sudo commands listed below as root
 Orca server in Docker (--apply --role server; README section 6.7):
@@ -51,16 +51,17 @@ Image (--apply):
   pull     ghcr.io/vzxxbacq/orca-server:main and lock its digest in ~/.config/orca-setup/docker/image.lock
            re-runs keep the locked digest; only --upgrade-image pulls a newer one
 Container (--apply):
+  write    ~/.config/orca-setup/docker/orca-service.py (persistent process manager; mounted read-only)
   check    the pairing role, read-only inside the image, before the container starts
   write    ~/.config/orca-setup/docker/compose.yaml
-           orca-server: user 1000:1000, home ~ from ~/.local/share/orca-setup/home, host name fakehost,
+           <server-container>: user 1000:1000, home ~ from ~/.local/share/orca-setup/home, host name fakehost,
            read-only root filesystem with a tmpfs /tmp, restart unless-stopped, no sudo and no Docker inside
   network  the compose project's bridge network; only port 6768 is published, on 203.0.113.10 alone
            Docker's bridge networking turns on IPv4 forwarding and adds its own iptables rules; when it turns
            forwarding on itself it also sets the iptables FORWARD policy to DROP (README section 8)
   start    docker compose up --detach (when not running as rendered); wait until `orca-ide status` in it reaches the runtime
-  orca     skills and settings inside it: docker exec orca-server /opt/orca-setup/setup.sh --apply --role server
-  pairing  setup.sh never creates or prints a pairing link; pair clients from a terminal (README section 3.3.2)
+  orca     skills and settings inside it: docker exec <server-container> /opt/orca-setup/setup.sh --apply --role server
+  pairing  TUI maintenance pairing shows a link/QR; Orca sessions may stop, containers stay running (README section 3.3.2)
 Optional modules (add to --apply):
   --power         Use sudo to mask the systemd sleep targets; remind you of the BIOS power-loss setting. [selected]
     skip: systemd is not the init system here (a container?), so there are no sleep targets to mask
@@ -78,4 +79,4 @@ Authentication (interactive, run on their own):
   --auth-agy      Start agy to sign in to Google; over SSH it prints a URL to open elsewhere and asks for the code. Needs an unlocked Secret Service keyring to keep the session.
   --auth-linear   Print Linear's API settings URL (open it on any device); read a key without echoing or logging it.
   --check         Show baseline and authentication readiness, without printing credentials.
-Existing installations and user configuration are preserved. SSH is never configured.
+Existing installations and user configuration are preserved. Host SSH is never configured.

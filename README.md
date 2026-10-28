@@ -17,6 +17,7 @@
 
 ```sh
 ./setup.sh                          # same as --plan: print what would happen on this device, change nothing
+./setup.sh --tui                    # Linux server installation or management; Install/Apply saves automatically
 ./setup.sh --config orca.toml        # Linux Docker host: one TOML for server, proxy, DNS, executor and limits
 ./setup.sh --config orca.toml --apply # apply that configuration; no role/address flags needed
 ./setup.sh --check                  # read-only readiness report; exit code = number of missing items
@@ -83,7 +84,7 @@ remote/provision.sh --environment <name> --check               # exit code = the
 
 **Non-goals**
 
-- No SSH configuration (following the existing rule: `SSH is never configured`).
+- No host SSH configuration. Optional container-only mutual SSH is configured explicitly with `server.internal_ssh`.
 - No migration or copying of agent credentials, tokens or private keys; agent authentication happens interactively on the target device.
   Explicit proxy credentials may be entered in a private server TOML on that device (§3.3.3).
 - No project data migration; only extension points are reserved.
@@ -181,7 +182,7 @@ headless sign-in is described in §3.4.
 | Orca itself | `/Applications/Orca.app` (desktop; Homebrew cask `stablyai/orca/orca` when missing) | **headless runtime**: the official `.deb` from the latest stable GitHub release (`orca-ide_<version>_amd64.deb`), checked against GitHub's sha256 digest, then installed with `apt-get install <file>`; see §3.3.1. A client installs it on the host (`sudo`); a server has it in the Orca server image (§3.3.2) |
 | CLI name | `orca` | `orca` inside the Orca terminal; **outside the Orca terminal you must use `orca-ide`** (bare `orca` is the GNOME screen reader). Scripts resolve it uniformly via `ORCA_CLI_COMMAND` / probing |
 | Always-on | desktop app login item | `--role server`: the **`orca-server` container** (Docker Compose, `restart: unless-stopped`, so Docker brings it back after a reboot) running `orca-ide serve --supervise --no-pairing --port 6768 --pairing-address <address>`, with port 6768 published on the private publish address only (§3.3.2); `--role client`: none |
-| Pairing | Settings → Remote Orca Servers → New Link | the user stops the container and runs `orca-ide serve` in an interactive `docker compose run --rm` (§3.3.2); `setup.sh` never creates or prints a pairing link |
+| Pairing | Settings → Remote Orca Servers → New Link | TUI maintenance pairing shows a client link or mobile QR code without restarting Docker; Orca sessions may be interrupted (§3.3.2) |
 | Accounts | `orca account add --agent claude\|codex` | same, run on the server: inside the container, which `./setup.sh --auth-codex` on the host enters with `docker exec` (a remote client cannot add accounts) |
 | Skills | `orca skills install --skill orca-cli --skill orca-linear --skill computer-use --skill orca-emulator --agent universal,claude-code,codex`, listed in `manifest/orca-skills.tsv`; a skill is skipped when the local plan of `orca skills install ... --dry-run --json` would write nothing for it (an older copy counts as installed: no upgrades), with `orca skills installed` (which needs a running runtime) as the fallback for builds whose dry-run prints no plan | same, minus `orca-emulator` (the iOS simulator is macOS-only). `computer-use` is installed: upstream ships a Linux helper (AT-SPI, `native/computer-use-linux`) and the `.deb` depends on `python3-gi`, `at-spi2-core`, `xdotool` and `xvfb`, but it drives apps in a graphical session, so a headless server has nothing to drive until an app runs on a display |
 | Default settings | written through `orca-rpc settings.update` from `manifest/orca-settings.json`: `defaultTuiAgent=codex`, `agentStatusHooksEnabled=true`; the task source is **opt-in** (`--task-source linear` sets `defaultTaskSource=linear` and `visibleTaskProviders=[linear]`). `--apply` reads `settings.get` first and writes only when a key differs | same, through the `.deb`'s bundled runtime (`/opt/Orca/orca-ide` with `ELECTRON_RUN_AS_NODE`); a server's skills and settings are applied inside its container (`docker exec`) once the runtime answers; a client without a running Orca skips them with a notice |
@@ -267,7 +268,7 @@ Linux (design: §6.7, §6.7's P5.1 note):
 6. **The container.** `docker/compose.yaml` is rendered into `~/.config/orca-setup/docker/compose.yaml` (written when it
    differs), and `docker compose up --detach` starts the container unless it already runs from that file (it carries
    a checksum of the file as its `org.orca-setup.config` label):
-   - the compose project's own bridge network (`orca-server_default`) and exactly one published port,
+   - the compose project's own bridge network (`<project>_default`) and exactly one published port,
      `"<publish address>:6768:6768/tcp"`: Docker binds port 6768 on that host address only and forwards it to the
      container, where `orca-ide serve` listens on every interface (§3.3.1); the host's other addresses, a public one
      included, do not answer on it. `hostname:` is the host's name, as on the host network before P5.1: Orca shows it
@@ -283,7 +284,7 @@ Linux (design: §6.7, §6.7's P5.1 note):
      container takes its log with it.
 7. It waits up to 120 s (`ORCA_SETUP_SERVE_WAIT`) until `orca-ide status --json` inside the container reports the
    runtime reachable (the reply is read there and never printed), then installs the missing skills and aligns the
-   settings with `docker exec orca-server /opt/orca-setup/setup.sh --apply --role server`, the image's copy of these
+   settings with `docker exec <server-container> /opt/orca-setup/setup.sh --apply --role server`, the image's copy of these
    scripts.
 
 A second run with the same arguments prints only `PRESENT` lines and the role report. `--pairing-address` is the
@@ -348,35 +349,114 @@ directory and persist there.
 `--role client` on Linux installs Orca and its CLI and the skills (§3.1); it starts no container and never creates a
 pairing offer. Settings are aligned only when an Orca runtime already runs on the device.
 
-**Pairing a client with a Linux server.** The pairing URL grants access to the server's runtime, so `setup.sh` never
-creates, captures, prints or logs one, and the container runs with `--no-pairing`. Upstream has no command or RPC that
-creates a pairing offer for a running server, and a supervised serve hides the URL from its log, so the user creates
-the link in an interactive terminal on the host (a plain SSH session, not tmux or an Orca terminal whose scrollback is
-kept):
+**Independent Orca process control.** Newly applied deployments run a persistent Python process manager
+inside the server container. Setup copies it to `~/.config/orca-setup/docker/orca-service.py` and mounts it
+read-only at `/opt/orca-service.py`; existing locked images can use it without an image upgrade.
+The manager resolves the installed CLI through `lib/detect.sh` and starts the normal supervised server.
+The TUI separates **Start/Stop/Restart Orca process** from **Start/Stop/Restart deployment**.
+Process controls use `compose exec -T` and a private Unix socket in container `/tmp`; they do not stop
+containers, gateways or independent execution workers. Status describes the CLI process, not runtime readiness.
+An intentional stop stays stopped until Start, Restart or a container restart. If the CLI supervisor itself
+exits, the container stays up and process status records its exit code; use Start after investigating.
+A stop waits up to 60 seconds for the tracked CLI to exit. It never force-kills descendants or starts a
+replacement after a timeout. A failed or missing controller never falls back to restarting Docker.
+
+For manual process status, use your generated Compose file:
 
 ```sh
-cd ~/.config/orca-setup/docker
-docker compose stop                     # one Orca per profile: a second serve would refuse to start
-docker compose run --rm --service-ports orca-server orca-ide serve --port 6768 --pairing-address <address>
-                                        # prints "Pairing URL: orca://pair?..."; copy it, then Ctrl-C
-docker compose start
-clear                                   # drop the URL from the terminal
+docker compose -f ~/.config/orca-setup/docker/compose.yaml exec -T orca-server python3 /opt/orca-service.py status
+# Replace status with start, stop or restart to control only Orca.
 ```
 
-This is upstream's documented way for a service-managed server ("pair clients … with `orca serve` in a terminal while
-the service is stopped"). `<address>` is the pairing address (the one in `compose.yaml`'s `command`). `docker compose
-run --rm` uses the same image, user, home, host name and mounts, so the offer is stored in the device registry in
-`~/.orca` and the restarted container accepts it. `--service-ports` publishes the service's port exactly as
-`compose.yaml` does, on `<publish address>:6768` only, so clients can also reach this serve while it runs; without it
-the run container would publish nothing. CI runs this command against the rendered file (with `--no-pairing` added,
-so no offer exists in CI) and checks that only the publish address answers; the run container logs to `json-file`
-(set in `compose.yaml`, not the daemon's default, which could be journald or a remote driver), so removing it takes
-its log with it. Stopping the container ends the terminal sessions running in it. On the client, paste it in
-**Settings → Remote Orca Servers → Add Server**, or read it without echo instead of putting it on a command line (the
-shell history would keep it): `read -rs code && orca environment add --name <server> --pairing-code "$code"`.
-`--mobile-pairing` does the same for Orca Mobile. If a link leaks before it is used, generate a new one: that replaces
-the unused link. Never take a link from `docker logs`: with `--no-pairing` the server never writes one there, and a
-log would keep it.
+Existing deployments need one **Apply** during a maintenance window to adopt the new command and mount.
+Apply and image/configuration changes can still recreate containers. Orca shutdown can interrupt its own
+sessions, so container continuity does not establish continuity for every agent.
+
+**Maintenance pairing (Orca downtime, container stays running).** In the management page choose
+**Pair a client** or **Pair a mobile device**, review the interruption notice, then confirm **Yes, pair**.
+The container manager stops the tracked Orca process and starts the same CLI with its existing address,
+port and profile, without `--supervise` or `--no-pairing`. Mobile mode adds `--mobile-pairing` so Orca emits
+its terminal QR code and link. The normal server and pairing server never run concurrently.
+
+On your Mac, paste the client offer into **Settings → Remote Orca Servers → Add Server**; on mobile, scan
+the displayed QR code. After pairing, press **Enter**, answer **y** to the exit confirmation, wait for recovery,
+then press Enter to return to
+management. Answer **n** or an empty line to keep pairing; **Ctrl-C** remains a shortcut to exit. Heartbeats
+continue while the confirmation is open. Normal Orca restarts if it was running before pairing; a previously stopped Orca stays stopped.
+The host checks the restored process state, not successful enrollment: verify connection on the client.
+
+Offers stream directly through a private Unix socket and `docker compose exec -T` to the interactive terminal.
+They are never written to Docker logs, temporary files or captured by the setup helper. Use a trusted terminal
+without session recording; terminal scrollback still contains what was displayed. Do not copy offers into logs.
+The host supplies a heartbeat through exec stdin. If the TUI/SSH process disappears, EOF or a 10-second lease
+expiry makes the container manager stop pairing and restore the previous service state. Graceful shutdown can
+add up to 60 seconds. A stop timeout never force-kills descendants or launches a second runtime; inspect process
+status and resolve the failed stop before retrying. No recovery path restarts Docker or a gateway.
+
+This is maintenance pairing, not live pairing: Orca connections and Orca-owned sessions can be interrupted.
+Independent workers and executor/gateway containers stay running. Older managers are detected before any stop;
+use **Apply** in a maintenance window to install the updated manager, then reopen the pairing action.
+For the same interactive flow outside the TUI, from the setup checkout run:
+
+```sh
+python3 lib/server-manage.py pair-mobile   # mobile QR/link; Enter opens exit confirmation
+python3 lib/server-manage.py pair          # desktop client offer; same downtime and recovery
+```
+
+The currently supported upstream runtime requests `agent-state-rules-engine-1-stable` or `-next` release assets
+that may not exist (HTTP 404). This optional update falls back to local rules; it is independent of pairing.
+The terminal relay explains this exact warning without hiding other errors. The current public settings API
+rejects the internal `agentStateRulesLiveUpdates` switch, so setup does not edit the runtime database or pretend
+to disable that request. Eliminating the request requires an upstream fix or supported configuration interface.
+
+Unattended installation never starts pairing. Tests use synthetic offers; no account or real pairing credential
+is created by automated pairing tests.
+
+**Interactive shells and mutual container SSH.** New server images include zsh, OpenSSH and a pinned,
+checksum-verified Oh My Zsh under `/opt/oh-my-zsh`. No shell framework downloads or automatic updates happen at
+container startup. Each writable HOME gets a `.zshrc` only when absent; existing files are never replaced.
+Custom plugins live under `~/.config/oh-my-zsh/custom`, cache under `~/.cache/oh-my-zsh`, and history in
+`~/.zsh_history`. Orca and executor retain separate personal homes and a shared project directory.
+Interactive SSH uses zsh; application commands still select their own Bash/Python interpreter.
+
+Enable mutual SSH in the same server TOML (also available in the TUI server settings):
+
+```toml
+[server]
+internal_ssh = true
+# Keep your existing server address, image and storage settings.
+[network]
+mode = "isolated"
+```
+
+A compatible image carrying `org.orca-setup.internal-ssh=1` is required. Older locked images are refused;
+explicitly build/select or upgrade an image before applying. SSH is disabled by default for existing installs.
+Both daemons run as the regular container UID on their control-network IPv4 address, port 2222. There is no
+published host SSH port, root login, password authentication, agent forwarding or SSH port forwarding. The
+firewall permits only the other container's control address; Orca-to-executor SSH bypasses the proxy redirect.
+
+Setup generates deployment-only client and host keys locally under the generated Docker directory's `ssh/`.
+It mounts only the corresponding `orca/` or `executor/` identity directory into each container, read-only at
+`/run/orca-ssh`. It never imports host SSH private keys or changes host `authorized_keys`/sshd configuration.
+Peer host keys are pinned, private identities persist across recreation, and uninstall retains them. A full
+host-home mount may also expose the deployment directory, consistent with the trusted-peer model; these paths
+are not a security boundary between peers. The SSH
+client uses a system include for these two aliases, preserving existing user SSH configuration:
+
+```sh
+# Inside the Orca container:
+ssh executor
+# Inside the executor container:
+ssh orca
+# Either container, including when mutual SSH is disabled:
+zsh
+```
+
+SSH and the application have separate supervised processes. Stopping/restarting Orca for pairing leaves SSH
+running; an intentional Docker restart still ends all sessions. Both containers are trusted peers: although the
+executor's direct public egress remains blocked/proxied as configured, it can execute a network command through
+`ssh orca`, using Orca's network. SSH forwarding restrictions do not turn an unrestricted remote shell into an
+isolation boundary. This option deliberately enables that shared trust model.
 
 #### 3.3.3 Optional isolated networking and LAN-only execution
 
@@ -399,18 +479,96 @@ The same digest-locked image supplies four services:
 |---|---|
 | `orca-server` | Same UID:GID, state mounts and read-only root as before; joins `orca-gateway`'s network namespace without capabilities. Proxy environment variables are explicitly empty; TCP is transparently redirected regardless of application proxy support. |
 | `orca-gateway` | Dedicated namespace owner, root with only `NET_ADMIN` and `NET_BIND_SERVICE`; `redsocks` forwards TCP to the existing SOCKS5 or HTTP CONNECT endpoint. A loopback DNS forwarder sends both UDP and TCP DNS queries through that proxy, using certificate-verified DNS-over-HTTPS by default. Owns the private `<publish address>:6768` binding; no other host port is published. |
-| `orca-executor` | Same UID:GID, a separate persistent home, only the shared workdir mounted; no Orca state, agent login directories, local overlay or Docker socket. Runs the non-interactive command service on the private control address, port 7777. No proxy environment and no public egress. |
-| `executor-gateway` | Dedicated executor namespace owner, root with only `NET_ADMIN`; allows direct traffic to the explicit private IPv4 CIDR/protocol/port rules and optional private DNS server. No public proxy or general Internet access. |
+| `orca-executor` | Same UID:GID, a separate persistent home, only the shared workdir mounted; no Orca state, agent login directories, local overlay or Docker socket. Runs the non-interactive command service on the private control address, port 7777. Public access is blocked, direct or proxied according to `executor.internet`. |
+| `executor-gateway` | Dedicated executor namespace owner; allows direct traffic to explicit private IPv4 CIDR/protocol/port rules and an optional private DNS server. Public access is blocked by default; direct or transparent proxy egress is opt-in. Proxy mode uses `NET_ADMIN` and `NET_BIND_SERVICE`, other modes use `NET_ADMIN`. |
 
 The gateway namespaces are connected to a dedicated internal control bridge and an outbound bridge. Firewall rules
 inside each namespace default to DROP, including forwarding; applications cannot change them. Orca can reach the
-executor's command port directly, and the executor can call Orca's control port directly. Public UDP and IPv6 are
-blocked; IPv6-only services, QUIC-only clients and non-TCP public protocols are unsupported. Approved executor UDP
+executor's command port directly, and the executor can call Orca's control port directly. IPv6 is blocked. Orca and
+proxied executor egress support TCP and forwarded DNS; other public UDP is blocked. In executor direct mode public
+IPv4 protocols use the host route; private destinations remain restricted to explicit rules. Approved executor UDP
 ports work directly. Docker's embedded DNS is disabled in these namespaces to avoid a resolver bypass. This is more
 than setting `internal: true` or proxy environment variables: unapproved outgoing connections are actually blocked.
 
 **Configure on the target device with one TOML (recommended).** Python 3.11 or newer is required on the Docker host
 only when using TOML. Ubuntu 24.04 and Debian 12 provide compatible Python versions. Copy the tracked template:
+
+Alternatively, run `./setup.sh --tui` from an interactive terminal on the Linux server, or add `--config FILE` to
+select a TOML. The full-screen interface provides a highlighted navigation list and contextual explanations.
+Review the sections from top to bottom: server/storage, Orca proxy/DNS, executor access, LAN rules, limits and
+file locations, followed by Restore configuration, Preview plan and Install. There is no separate setup wizard
+or Save button.
+Moving between settings immediately updates the right-hand configuration preview, without entering the editor.
+It shows the relevant addresses, paths, proxy endpoint, DNS, executor rules or limits. `*` marks unsaved changes
+with the previous saved value; authentication values stay hidden, including in change summaries. PgUp/PgDn scroll
+the preview, independently of the menu. These are configuration values, not live deployment status.
+Use arrow keys (or `j`/`k`) and Enter to select; Esc cancels the current section without keeping partial edits.
+Text fields support cursor keys, Home/End, Backspace/Delete and Ctrl-U to clear. Password input is masked, and
+Enter keeps the existing password. Without a generated deployment, the installation page opens with the first
+configuration section selected. Account sign-in and lifecycle actions appear
+only in management; a saved TOML by itself does not count as an installation.
+Changes stay in memory until **Install & start server**, **Apply changes** or **Apply & upgrade image** is confirmed.
+The action validates the draft, automatically backs up any existing TOML and saves it atomically with mode 0600
+before running setup. Validation or backup failure prevents replacement and deployment. Reapplying identical
+content creates no additional backup. Saving keeps settings but rewrites TOML formatting and comments.
+**Preview plan** works on current unsaved edits using a private temporary TOML, which is removed afterward;
+relative paths still resolve against the selected configuration's directory. It never saves the draft, creates
+a backup or changes the deployment. The plan output may mention its temporary configuration path.
+The configuration path stays visible in the footer. **File locations** and
+the pre-apply review show generated Compose/network files, Orca home, executor home, shared workdir and temporary
+`/tmp` locations, along with the backup directory. Review the configuration and choose **Install & start server**;
+Preview plan is optional. Installation, applying changes and image upgrade each require an explicit confirmation.
+The deployment review shows the current settings and file locations with **Yes** / **No** buttons fixed at the
+bottom of the same screen. Up/Down or PgUp/PgDn scrolls the review; Left/Right or Tab selects a button and Enter
+confirms it. No is selected initially, and Esc returns to editing without saving or deploying.
+Command output and sign-in temporarily use the regular terminal; Enter
+returns to the interface afterward. A failed command displays its exit status.
+If setup fails after saving, the new TOML remains saved and the previous version stays available for recovery;
+the UI does not claim that the deployment succeeded or silently roll running containers back.
+
+**Configuration history.** Before overwriting a TOML, the TUI saves its exact previous bytes (including comments)
+under `<configuration-file>.backups/`, for example `~/.config/orca-setup/server.toml.backups/`. Filenames include a UTC
+timestamp; the directory is mode 0700 and backups are 0600. Backups can contain inline proxy authentication, so
+they are excluded from Git and Docker build contexts and must remain outside the executor home and shared workdir.
+External authentication files are not copied. Backups are retained until the user removes them.
+**Restore configuration** lists backups newest first and loads the selected version into the editor for review.
+Install or Apply saves and deploys that version, backing up the current TOML first. Loading or cancelling a restore
+does not change files or running containers. A malformed current TOML opens a recovery notice so backups remain
+accessible. These are TOML backups, not snapshots of images, image locks or user data; image upgrades remain explicit.
+
+Successful installation starts the selected image and opens **Server management**. Later TUI launches open management
+automatically when this user's generated Compose exists, including when the server is stopped. The page shows
+the applied client/listen addresses, container states and a local TCP port check. **Refresh status** updates the
+snapshot; a successful TCP check does not establish client reachability or pairing.
+Management provides **Start installed server**, **Stop server**, **Restart server**, **Uninstall server**, **Pair a client**, **Pair a mobile device** and
+**Sign in to accounts**. Start/restart use the applied Compose and locked image without pulling or adopting TOML
+edits; stopping preserves all data. Sign-in runs interactively in the terminal; pairing entries confirm Orca downtime, then stream a link or QR code while keeping containers running. **Edit configuration**
+opens an editor for the existing deployment, with **Apply changes**, explicit image upgrade and **Back to management**;
+it has no installation wizard, account or lifecycle menu. Esc in the editor returns to management, confirming
+before discarding unsaved changes. Esc at the management root quits; cancelling a management dialog stays in management.
+Management operations are serialized with `manage.lock` beside the generated Compose. Opening either page is
+read-only; the user explicitly starts every install, lifecycle or login operation. Pairing never implies permission to stop a service.
+**Uninstall server** shows the deployment and a removal/retention summary with Yes/No confirmation. It removes this
+Compose project's containers and networks, retaining the TOML and its backups, image lock, images, private proxy
+volumes, user home and shared workdir. It does not uninstall Docker. After successful removal, generated Compose
+is archived as `docker/compose.uninstalled.yaml` and the TUI returns to installation with the saved settings.
+Future launches also open installation, remembering the previous TOML location. If removal fails, the active
+Compose remains available for recovery. Reinstall reuses the retained data and locked image.
+
+**Deployment names.** New installs use a stable Compose project name `orca-<uid>-<12-character-hash>`, derived from
+the user's generated Docker configuration directory. Containers share that prefix, for example
+`orca-1000-a1b2c3d4e5f6-server`, `-gateway`, `-executor-gateway` and `-executor`; Docker networks become
+`orca-1000-a1b2c3d4e5f6_control` and `_outbound` in isolated mode. Service keys such as `orca-server` stay unchanged,
+so `docker compose exec orca-server ...` still works from the generated Compose directory. Restart and upgrade keep
+the names. Existing deployments retain their recorded project and legacy names; uninstalling and reinstalling an
+old deployment adopts the new names. Management displays the project and refuses mutations when its containers
+belong to another installation directory. Separate installations still need separate data directories, listening
+addresses and non-overlapping control subnets; unique names alone do not isolate shared profiles or published ports.
+The interface uses Python's standard-library `curses` (no pip packages), requires a terminal at least 64×20,
+supports resizing and scrollable lists/pages, and uses reverse-video selection when colors are unavailable or
+`NO_COLOR` is set. Connect using `ssh -t` with a valid terminal type (`TERM`); `dumb` terminals are refused.
+Without a selected or recorded TOML, the menu uses `~/.config/orca-setup/server.toml`. The normal no-argument
+`./setup.sh` remains a read-only plan.
 
 ```sh
 cp orca.example.toml orca.toml
@@ -434,8 +592,10 @@ The [complete template](orca.example.toml) includes `[server]`, `[network]`, `[p
 `[[executor.allow]]` and `[limits]`. Proxy `address` is a numeric IPv4 endpoint reachable from Docker, not an SS URI
 or a subscription. For authenticated SOCKS5/HTTP CONNECT, set both `username` and `password` directly under `[proxy]`.
 Such a file must be caller-owned with mode 0600 or 0400, and must live outside the checkout or at its ignored root
-`orca.toml`. It must also be outside the shared workdir and container data mounts, so execution commands cannot
-read the source credentials. Do not put it in `manifest/local/`, which is copied into application containers. An optional external
+`orca.toml`. It must also be outside the shared workdir and executor data mounts, so execution commands cannot
+read the source credentials. Do not put it in `manifest/local/`, which is copied into application containers. When
+the full host home is mounted for Orca, a TOML inside that home is readable by the Orca process as the same user.
+An optional external
 `auth_file` remains supported, mutually exclusive with inline credentials.
 
 Inline credentials are piped over stdin into a temporary, network-disabled container that writes a root-owned
@@ -444,7 +604,8 @@ No password is written to Compose, generated public policy, command arguments, D
 image. `--plan` never creates a volume or publishes credentials; `--check` compares the running gateway's private
 file without changing it. `--apply` synchronizes changes and recreates the stack when its gateway detects changed
 authentication. The volume persists across container removal/reboots; removing it requires reapplying the TOML.
-The TOML remains the only user-maintained input; Compose, policy/resolver files and the private volume are generated
+The executor's separate proxy authentication, when configured, uses a separate private volume mounted only by
+`executor-gateway`. The TOML remains the only user-maintained input; Compose, policy/resolver files and the private volume are generated
 runtime state. Docker administrators can access that volume, just as they can access other container state.
 
 `server.image_source = "registry"` (default) pulls and locks the configured image's registry digest. For an image
@@ -455,6 +616,29 @@ mode the configured image is authoritative: a legacy `manifest/local/Dockerfile`
 any custom image first and name it in TOML. All four services use the same locked image, which must contain the
 gateway/executor scripts from this version of the repository. If an existing registry image lock predates these
 scripts, explicitly pass `--upgrade-image` when applying after the updated image has been published.
+
+**Home directory and persistence.** `[server] home_mount = "host"` bind-mounts the entire host home at the same
+path into `orca-server` as the current UID:GID. New TUI configurations and the template choose `host`; configurations
+without this field and legacy CLI configurations retain the earlier `dedicated` home. The executor keeps its own
+home and mounts only the shared workdir, so files written there appear in Orca without exposing the host home to the
+executor. Orca can read and write everything in the host home, including its keys, accounts and a TOML stored there.
+Only `/tmp` is a tmpfs; the image root remains read-only, so persistence is for writable mounts, not arbitrary system
+directories. Changing home mode recreates the server and interrupts sessions. The previous dedicated home remains at
+`~/.local/share/orca-setup/home` on disk and is not copied or merged automatically: files that existed only there are
+not visible at their former home paths in host mode. For a custom workdir in host mode, `~/orca` must already be a
+symlink to that workdir; setup refuses rather than altering an existing host directory.
+
+**Executor public access.** `executor.internet` defaults to `"blocked"`; `"direct"` permits public IPv4 directly via
+the host route, and `"proxy"` transparently proxies public TCP. Private CIDRs are still restricted to
+`[[executor.allow]]` in every mode. In proxy mode, omit `[executor.proxy]` to reuse the Orca proxy or set its `type`,
+`address`, `port` and optional authentication independently; a failed proxy never falls back to direct Internet.
+Public DNS goes through that proxy by default. An explicitly configured `executor.dns` is a private resolver reached
+directly and may receive the executor's DNS queries. Direct mode without a private DNS uses `dns.address` directly.
+The executor still requires `orca-exec`; upstream Orca does not automatically move ordinary shell commands into it.
+The gateway scripts for the selected modes must exist in the locked image; after updating this repository use
+`--apply --upgrade-image` once when the installed image predates these features. Direct and proxy modes check the
+image's `org.orca-setup.executor-network=1` label before replacing the stack; custom images must retain that label and
+the current gateway scripts. The default blocked mode remains compatible with older isolated-network images.
 
 **How the generated Compose sets up the gateways.** See the [rendered, annotated example](examples/compose.generated.yaml).
 `orca-server.network_mode: service:orca-gateway` shares the gateway's network namespace: the two containers have the
@@ -563,7 +747,7 @@ endpoint's listener separately.
 "Without a desktop" means neither `DISPLAY` nor `WAYLAND_DISPLAY` is set (`lib/detect.sh`); macOS always has one.
 
 On a Linux server every login runs inside the container, where the agents and Orca are: `./setup.sh --auth-<name>` on
-the host runs `docker exec --interactive [--tty] orca-server /opt/orca-setup/setup.sh --auth-<name>` (a terminal gets
+the host runs `docker exec --interactive [--tty] <server-container> /opt/orca-setup/setup.sh --auth-<name>` (a terminal gets
 `--tty`, so the hidden Linear prompt works), passes `SSH_CONNECTION` and `SSH_TTY` through so that agy prints its URL,
 and refuses while the container is not running. What the logins store lands in the mounted directories (`~/.config/gh`,
 `~/.orca`, `~/.codex`, `~/.claude`, `~/.gemini`).
@@ -808,9 +992,8 @@ ways, tabs multiply and end up bound to the wrong host. Rule: **every host has e
 | `server` | no | yes, from its clients |
 
 - `setup.sh --role client|server` is required for `--apply`; `--plan` shows what the role implies.
-- `--role server` never runs `orca environment add`; `--role client` never prints a runtime pairing code. No role
-  makes `setup.sh` print a pairing code: on a Linux server the container runs with `--no-pairing` and the user
-  creates each link in an interactive terminal (§3.3.2).
+- `--role server` never runs `orca environment add`; `--role client` never prints a runtime pairing code.
+  Unattended setup never creates a pairing offer. On Linux the normal server uses `--no-pairing`; TUI maintenance pairing requires explicit confirmation and an intentional maintenance window (§3.3.2).
 - On Linux the role also decides the Orca setup: a server runs Orca in the `orca-server` container (Docker Engine on
   the host), a client gets Orca and its CLI only (§3.3.2).
 - `--apply` refuses to continue when the device already holds the other role (saved environments on a server, or
@@ -989,7 +1172,7 @@ Debian 12) as the new server; nothing here is covered by CI, and no pairing secr
    on the host still works.
 2. **P2, pairing**: create a link with the container stopped (§3.3.2, `docker compose run --rm --service-ports`), save
    it on the laptop with `read -rs code && orca environment add --name <server> --pairing-code "$code"`, run `clear` on
-   the server, and check `orca status --environment <server>` on the laptop. Confirm `docker logs orca-server` holds
+   the server, and check `orca status --environment <server>` on the laptop. Confirm `docker compose logs orca-server` (from the generated Compose directory) holds
    no pairing URL.
 3. **P4, provisioning**: on the laptop, `remote/provision.sh --environment <server>` (plan only; it recognises the
    Docker server), `remote/provision.sh --environment <server> --apply --path ~/orca/projects/orca-setup` (registers
@@ -1065,10 +1248,8 @@ below is as decided; how it was built, and where it differs, follows at the end 
 
 **Pairing, logins, check.**
 
-- Pairing: `docker compose stop`, then an interactive `docker compose run --rm` (since P5.1 with `--service-ports`) of
-  `orca-ide serve --port 6768 --pairing-address <address>` in an SSH terminal; copy the link, Ctrl-C,
-  `docker compose start`, `clear`. The removed run container takes its log with it; `setup.sh` still never creates,
-  captures or prints a link.
+- Pairing: TUI maintenance pairing switches only the Orca process, streams the client link or mobile QR code,
+  then restores the previous service state. Orca sessions may be interrupted; containers stay running (§3.3.2).
 - `./setup.sh --auth-*` on the host runs each login inside the container (`docker exec -it`); Orca skills and
   settings are applied the same way. agy has no Secret Service in the container, so its sign-in is expected not to
   persist; confirmed or refuted on real hardware (§9).
@@ -1162,6 +1343,26 @@ A publish job runs only on pushes to `main`.
   idempotence, policy drift and explicit return to direct mode. Existing direct-mode tests remain unchanged in scope.
 - `python3 -m unittest discover -s tests/python -v` exercises actual executor sockets/subprocesses, binary streams,
   exit codes, cwd/symlink validation, cancellation, background-process cleanup and DNS framing, with no credentials.
+  Terminal tests cover navigation previews, masking, resizing, cancellation, automatic saving, private backups,
+  restoration, draft plans and automatic management routing. Management tests cover deployment scoping,
+  maintenance confirmation, legacy manager refusal, disconnect recovery and safe uninstall failure handling.
+- The Linux server CI job runs the three lifecycle/SSH tests below against the image built from the PR's
+  `docker/Dockerfile`, after baseline and network integration. Each step uses a clean environment and a time limit.
+  They are required by the existing publish dependency; PRs never publish images. Pairing fixtures use synthetic
+  offers, while the native-runtime test uses `--no-pairing` with a fresh container home.
+- `ORCA_SETUP_TEST_IMAGE=<shell-capable-image> python3 tests/integration/internal-ssh.py` checks mutual SSH,
+  non-root PTYs and zsh/Oh My Zsh, pinned identities, persistent user files, application-stop survival and blocked
+  executor egress behind actual gateway firewalls. Only disposable containers and fresh identities are used.
+- `ORCA_SETUP_TEST_IMAGE=<local-server-image> python3 tests/integration/service-native.py` tests native Orca stop/start
+  in a disposable container with a fresh home and no published ports. It may download the native runtime; no host
+  profile is mounted. This checks independent workers, not Orca-owned agent continuity.
+- `ORCA_SETUP_TEST_IMAGE=<local-server-image> python3 tests/integration/tui-management.py` exercises process and deployment start/stop/restart,
+  uninstall and reinstall in real Docker with direct and shared gateway namespaces. It invokes both pairing actions
+  while an independent worker writes a heartbeat, and verifies synthetic offer streaming, Ctrl-C and killed-host
+  recovery, an unchanged container ID/start time, continued worker activity and an unchanged gateway. Synthetic
+  offers must not appear in Docker logs. No real pairing offer or account data is created. Each fixture
+  uses a unique Compose project and removes only its own resources. Run as a regular Docker user with
+  loopback `127.0.0.2:6768` available.
 - `tests/integration/network.sh` runs after the existing Linux server integration on the GitHub-hosted VM. A local
   fixture supplies unauthenticated/authenticated SOCKS5, HTTP CONNECT, DNS and LAN TCP/UDP services; real packets verify proxy routing, allowed and
   denied executor ports, DNS/IPv6 restrictions, no direct fallback on proxy failure, private control availability,
@@ -1197,7 +1398,7 @@ HTTP 401/403 confirms transport only. This does not complete the interactive pai
     (test-only override, §3.3.2) twice. The second run must run no step and leave the packages, apt sources,
     `compose.yaml`, `image.lock` and the container itself unchanged; the runner's preinstalled Docker (packages, apt
     sources, group) must be used as it is and stay unchanged; the container must run on the compose project's bridge
-    network (`orca-server_default`) with the runner's host name, a read-only root filesystem, `restart:
+    network (`<project>_default`) with the runner's host name, a read-only root filesystem, `restart:
     unless-stopped` and an init, as the runner's UID:GID with `HOME` at the runner's home path, without `sudo` or
     `docker`, and with every baseline tool, agent and image tool on its `PATH`; `orca-ide status --json` inside it
     must report the runtime reachable; `docker port` must list only `127.0.0.2:6768` (the publish address, defaulting
@@ -1259,7 +1460,7 @@ HTTP 401/403 confirms transport only. This does not complete the interactive pai
 | `orca-rpc.cjs` depends on Orca internals (`out/cli/runtime-client.js`) and RPC method names (`settings.update`, `accounts.list`, `linear.status`, `files.writeBase64`), which may change between versions | use the public CLI wherever possible; keep all RPC calls under `orca/`; `--check` fails loudly instead of silently when a probe fails |
 | On Linux, `orca` collides with the GNOME screen reader | `detect.sh` resolves the CLI name in one place; scripts must never hardcode `orca` |
 | Support for `agy`, `computer-use` etc. on Linux is uncertain | verify feasibility before P2/P3; mark them macOS-only in the manifest if unsupported (`computer-use` has an upstream Linux helper and stays installed, §3.3) |
-| A pairing URL leaks through logs or scrollback | the server container runs with `--no-pairing`; `setup.sh` never asks for an offer; the user creates links in an interactive, removed `docker compose run --rm` (§3.3.2); tests assert no pairing URL in any output, status reply or container log |
+| A pairing URL leaks through logs or scrollback | normal containers run with `--no-pairing`; maintenance pairing streams directly to a trusted terminal without Docker logging or offer files, during deliberate Orca downtime (§3.3.2). Unattended tests never create offers. |
 | The `.deb` download is tampered with | GitHub's per-asset sha256 digest and the package's control fields are checked before `apt-get` sees the file; no digest, no install (§3.3.1) |
 | Browser login on headless Linux | prefer device-code flows (codex, gh); otherwise print a URL for the user to finish on any machine (Linear; agy prints its own over SSH) |
 | agy cannot keep its sign-in on a headless server (no unlocked Secret Service keyring) | documented in §3.4; `--auth-agy` warns without SSH or D-Bus; `setup.sh` never handles keyring passwords; verified on real hardware (§6) |
@@ -1304,7 +1505,7 @@ HTTP 401/403 confirms transport only. This does not complete the interactive pai
 | Orca on Linux | official `.deb` from GitHub releases (§3.3.1): installed on a client; on a server inside the image, run as `orca-ide serve --supervise` in the container (§3.3.2; until P5 under a systemd user unit) |
 | Linux server address | `--pairing-address <ip-or-host>` is required for `--apply --role server`; loopback and wildcards are refused |
 | Linux server port (2026-10-26, P5.1) | no host network: Docker publishes the container's port 6768 only on the server's private `--publish-address` (default: an IPv4 `--pairing-address`; required for a host name; an address of one of the host's interfaces), recorded in `compose.yaml`; the container keeps the host's name (§3.3.2, §6.7) |
-| Pairing link on a Linux server | never handled by `setup.sh`; the container runs with `--no-pairing` and the user runs `orca-ide serve` in an interactive `docker compose run --rm` while the container is stopped (§3.3.2) |
+| Pairing link on a Linux server | normal containers run with `--no-pairing`; TUI maintenance pairing displays a client link or mobile QR and restores Orca without restarting containers (§3.3.2) |
 | P2 acceptance | accepted on CI; pairing from a laptop client to a real Linux x86_64 machine is pending (§6) |
 | `computer-use` on Linux | installed: upstream ships a Linux AT-SPI helper; it needs a graphical session to drive apps (§3.3) |
 | agy sign-in on a headless host | `--auth-agy` runs agy, which prints a URL over SSH; keeping the session needs an unlocked Secret Service keyring, which `setup.sh` does not set up (§3.4) |

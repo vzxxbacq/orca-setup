@@ -39,17 +39,19 @@ class Proxy(socketserver.BaseRequestHandler):
         if Path("/tmp/no-proxy").exists():
             return
         try:
-            if self.server.server_address[1] == 1080:
+            if self.server.server_address[1] in (1080, 1082):
                 version, count = receive(conn, 2)
                 methods = receive(conn, count)
                 assert version == 5
-                if Path("/tmp/require-auth").exists():
+                if self.server.server_address[1] == 1082 or Path("/tmp/require-auth").exists():
                     assert 2 in methods
                     conn.sendall(b"\x05\x02")
                     assert receive(conn, 1) == b"\x01"
                     user = receive(conn, receive(conn, 1)[0])
                     password = receive(conn, receive(conn, 1)[0])
-                    assert user == b"fixture-user" and password == b"fixture-password"
+                    expected = ((b"executor-fixture", b"executor-password") if self.server.server_address[1] == 1082
+                                else (b"fixture-user", b"fixture-password"))
+                    assert (user, password) == expected
                     conn.sendall(b"\x01\x00")
                 else:
                     assert 0 in methods
@@ -137,7 +139,7 @@ class TcpServer(socketserver.ThreadingTCPServer):
 
 
 servers = [TcpServer(("0.0.0.0", port), handler) for port, handler in
-           ((1080, Proxy), (1081, Proxy), (8053, DnsTcp))]
+           ((1080, Proxy), (1081, Proxy), (1082, Proxy), (8053, DnsTcp))]
 servers += [http.server.ThreadingHTTPServer(("0.0.0.0", 8080), Origin),
             socketserver.ThreadingUDPServer(("0.0.0.0", 8053), DnsUdp),
             socketserver.ThreadingUDPServer(("0.0.0.0", 8090), Echo)]
