@@ -1339,6 +1339,8 @@ A publish job runs only on pushes to `main`.
 
 ## 7. Test strategy
 
+- Compose rendering reads the complete mount inventory before emitting bind mounts, avoiding asynchronous
+  producer exits during Bash 3.2 output on macOS; a failed inventory aborts rendering.
 - `tests/bats/network.bats` covers isolated topology rendering, mode persistence, validation before changes,
   idempotence, policy drift and explicit return to direct mode. Existing direct-mode tests remain unchanged in scope.
 - `python3 -m unittest discover -s tests/python -v` exercises actual executor sockets/subprocesses, binary streams,

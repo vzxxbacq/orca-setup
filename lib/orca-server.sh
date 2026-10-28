@@ -270,7 +270,7 @@ server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 
 # server_compose_render <image> <workdir> <pairing-address> <publish-address> <config>: the compose.yaml content.
 server_compose_render() {
-  local volumes limits path server_network executor_volumes='' network_dir='' policy_sum=''
+  local volumes limits path mounts server_network executor_volumes='' network_dir='' policy_sum=''
   local mode=${NETWORK_MODE:-direct} server_hostname server_environment='' auth_service='' auth_definition='' auth_volume=''
   local executor_auth_volume='' executor_auth_service='' executor_caps='["NET_ADMIN"]' volumes_definition='' secrets_definition=''
   volumes=$(
@@ -279,7 +279,12 @@ server_compose_render() {
       if [[ "$2" != "$HOME/"* ]]; then server_volume "$2" "$2"; fi
     else
       server_volume "$(server_home)" "$HOME"
-      while IFS=$'\t' read -r path _; do server_volume "$path" "$path"; done < <(server_mounts "$2")
+      # Wait for the producer before writing: asynchronous child exit can interrupt
+      # Bash 3.2 printf on macOS. Also propagate mount discovery failures.
+      mounts=$(server_mounts "$2") || exit 1
+      while IFS=$'\t' read -r path _; do
+        [ -z "$path" ] || server_volume "$path" "$path"
+      done <<<"$mounts"
     fi
     server_volume "$(server_config_dir)/orca-service.py" /opt/orca-service.py ro
     server_volume "$(server_overlay_dir)" "$ORCA_SERVER_ROOT/manifest/local" ro) || return 1

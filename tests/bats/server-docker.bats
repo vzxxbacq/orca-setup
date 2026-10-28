@@ -481,6 +481,14 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
 
 # ------------------------------------------------------------------ image.lock
 
+@test "compose rendering refuses an incomplete mount inventory" {
+  . "$REPO_ROOT/lib/orca-server.sh"
+  server_mounts() { printf '/partial\tpartial inventory\n'; return 1; }
+  run server_compose_render image "$HOME/orca" "$ADDRESS" "$ADDRESS" config
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
 @test "image.lock: re-runs keep the digest; --upgrade-image pulls the newest one and re-creates the container" {
   image_tools
   existing_docker
