@@ -265,6 +265,8 @@ PY
 }
 
 @test "mutual SSH is explicit, planned without writes, and refused on an older locked image" {
+  export FAKE_SSH_VERSION=0
+  export FAKE_EXEC_NETWORK_VERSION=1
   sed '/\[server\]/a\
 internal_ssh = true
 ' "$CONFIG" >"$CONFIG.new"
@@ -277,5 +279,7 @@ internal_ssh = true
   apply_config
   [ "$status" -ne 0 ]
   [[ "$output" == *'internal SSH requires a newer image'* ]]
+  [ ! -d "$HOME/.config/orca-setup/docker/ssh" ]
+  ! grep -q 'ssh-identity.py' "$FAKE_LOG"
   ! grep -q 'docker compose .*up' "$FAKE_LOG"
 }
