@@ -17,7 +17,7 @@ auth_agy() {
       warn 'agy prints its sign-in URL only in an SSH session; without a desktop or SSH it tries to open a browser here. Run --auth-agy from an SSH login.'
     fi
     if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
-      warn 'no D-Bus session: agy keeps its sign-in in the Secret Service keyring, so it may ask again next time (README section 3.4).'
+      warn 'no D-Bus session: agy keeps its sign-in in the Secret Service keyring, so it may ask again next time (DESIGN.md section 3.4).'
     fi
     info 'agy prints a sign-in URL: open it on any device, sign in, and paste the code it shows back here.'
   fi

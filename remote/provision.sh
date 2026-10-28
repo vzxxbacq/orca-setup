@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# remote/provision.sh: provision one paired device from the control machine (README section 5, steps 2-5).
-# Runs on the control machine, which must hold the client pairing role (README section 5.1). Everything happens
+# remote/provision.sh: provision one paired device from the control machine (DESIGN.md section 5, steps 2-5).
+# Runs on the control machine, which must hold the client pairing role (DESIGN.md section 5.1). Everything happens
 # through the public Orca CLI: the repository reaches the device with `project setup-clone` (or an existing checkout
 # there is reused), and setup.sh runs in an Orca terminal on the device whose output is streamed back here.
 # Read-only by default: without --apply it changes nothing on the device except opening one terminal there, and runs
 # only `./setup.sh --plan`. It never handles passwords, pairing codes or other credentials, and never runs --auth-*.
-# A Linux server in Docker (README section 6.7) is recognised from its terminal: Orca's terminals there run inside the
+# A Linux server in Docker (DESIGN.md section 6.7) is recognised from its terminal: Orca's terminals there run inside the
 # orca-server container, whose image sets ORCA_SETUP_CONTAINER=orca-server and writes /etc/orca-server-image. That
 # container has no sudo and no Docker, so for it --plan and --check run there and --apply is refused before setup.sh
 # runs, with a pointer to the host install over SSH.
@@ -93,8 +93,8 @@ while [ $# -gt 0 ]; do
     --check) set_mode check ;;
     --environment) need_value "$1" $#; environment=$2; shift ;;
     --environment=*) environment=${1#*=} ;;
-    --role) need_value "$1" $#; [ "$2" = server ] || usage_error "--role must be server: a device this client dials accepts runtime pairings (README section 5.1)"; shift ;;
-    --role=*) [ "${1#*=}" = server ] || usage_error "--role must be server: a device this client dials accepts runtime pairings (README section 5.1)" ;;
+    --role) need_value "$1" $#; [ "$2" = server ] || usage_error "--role must be server: a device this client dials accepts runtime pairings (DESIGN.md section 5.1)"; shift ;;
+    --role=*) [ "${1#*=}" = server ] || usage_error "--role must be server: a device this client dials accepts runtime pairings (DESIGN.md section 5.1)" ;;
     --pairing-address) need_value "$1" $#; pairing_address=$2; shift ;;
     --pairing-address=*) pairing_address=${1#*=} ;;
     --publish-address) need_value "$1" $#; publish_address=$2; shift ;;
@@ -178,9 +178,9 @@ preflight() {
     if [ "$detected" = dual ]; then printf '%s\n' "$role_output" | sed 's/^ROLE /Pairing role: /' >&2
     else printf '%s\n' "$role_output" | grep -v -e '^  ' -e '^CONFLICT ' | sed 's/^ROLE /Pairing role: /' >&2; fi
     case "$detected" in
-      server) refuse "this machine is an Orca server (it accepts runtime pairings); provision.sh runs on a client that saved the device with \`$CLI_NAME environment add\` (README section 5.1)." ;;
-      dual) refuse 'this machine holds both pairing roles; remove the pairings listed above first (README section 5.1).' ;;
-      none) refuse 'this machine has no saved environments; pair the device first (README section 3.3.2), then rerun.' ;;
+      server) refuse "this machine is an Orca server (it accepts runtime pairings); provision.sh runs on a client that saved the device with \`$CLI_NAME environment add\` (DESIGN.md section 5.1)." ;;
+      dual) refuse 'this machine holds both pairing roles; remove the pairings listed above first (DESIGN.md section 5.1).' ;;
+      none) refuse 'this machine has no saved environments; pair the device first (DESIGN.md section 3.3.2), then rerun.' ;;
       *) refuse 'the pairing role of this machine cannot be determined (see the reason above).' ;;
     esac
   fi
@@ -336,9 +336,9 @@ probe_device_form() {
   form=$(sed -n -E 's/^orca-setup-form (host|orca-server)$/\1/p' "$WORK/step.log" | head -n 1)
   DEVICE_FORM=${form:-host}
   [ "$DEVICE_FORM" = orca-server ] || return 0
-  info "Device form: a Linux server in Docker; its Orca terminals run inside the $ORCA_SERVER_NAME container (README section 6.7)"
+  info "Device form: a Linux server in Docker; its Orca terminals run inside the $ORCA_SERVER_NAME container (DESIGN.md section 6.7)"
   [ "$mode" != apply ] ||
-    refuse "$environment is a Linux server in Docker: its Orca terminals run inside the $ORCA_SERVER_NAME container, which has no sudo and no Docker and cannot change its host. Install or update it on the host over SSH: ./setup.sh --apply --role server --pairing-address <address> (README section 6.7). remote/provision.sh --plan and --check still work$(if [ "$CLONED" = yes ]; then printf ' with the checkout %s it just made' "$CHECKOUT"; fi)."
+    refuse "$environment is a Linux server in Docker: its Orca terminals run inside the $ORCA_SERVER_NAME container, which has no sudo and no Docker and cannot change its host. Install or update it on the host over SSH: ./setup.sh --apply --role server --pairing-address <address> (DESIGN.md section 6.7). remote/provision.sh --plan and --check still work$(if [ "$CLONED" = yes ]; then printf ' with the checkout %s it just made' "$CHECKOUT"; fi)."
 }
 
 # git_value <key>: a value the checkout verification printed.

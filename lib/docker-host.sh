@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Docker on a Linux server host (--role server, README section 6.7). The host gets Docker Engine from Docker's apt
+# Docker on a Linux server host (--role server, DESIGN.md section 6.7). The host gets Docker Engine from Docker's apt
 # repository (the "containers" rows of manifest/baseline.tsv, after the rows manifest/server-host.tsv names), or keeps
 # a working Docker installed any other way as it is. Podman, and a Docker that does not work, are refused.
 # The docker group grants root-equivalent access to the daemon. A group joined during this run is not active in the

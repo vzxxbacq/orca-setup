@@ -1,6 +1,6 @@
 # Orca skills installed by --apply with `orca skills install`.
 # Columns (tab-separated): skill, platforms (comma-separated), install targets passed to --agent.
-# computer-use on Linux is still to be verified (README section 9).
+# computer-use on Linux is still to be verified (DESIGN.md section 9).
 
 orca-cli	macos,linux	universal,claude-code,codex
 orca-linear	macos,linux	universal,claude-code,codex

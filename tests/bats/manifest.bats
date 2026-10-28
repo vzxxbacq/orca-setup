@@ -31,7 +31,7 @@ use_copy() {
   [ "$output" = "$(printf '%s\n' agent-gemini android apple baseline containers image media)" ]
 }
 
-@test "agent packages match README section 3.2" {
+@test "agent packages match DESIGN.md section 3.2" {
   run manifest_select agents.tsv macos baseline
   [ "$output" = "$(printf '%s\t%s\t%s\n' \
     codex codex npm:@openai/codex \

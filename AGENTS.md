@@ -9,7 +9,9 @@ Guidance for agents and humans working in this repository.
 
 ## Project
 
-`orca-setup` turns a fresh macOS or Linux device into a ready-to-use Orca development machine with a single set of scripts. The design plan lives in [README.md](README.md); read it before changing anything.
+`orca-setup` prepares macOS and Linux devices for Orca. Read [README.md](README.md) before changing anything.
+For installation and management without the TUI, follow [AGENT-OPERATIONS.md](AGENT-OPERATIONS.md).
+Numbered design notes and implementation history live in [DESIGN.md](DESIGN.md); consult the relevant section when changing behavior.
 
 ## Ground rules
 
@@ -23,4 +25,4 @@ Guidance for agents and humans working in this repository.
 - Bash scripts: `set -euo pipefail`, `shellcheck`-clean, quoted expansions, no hardcoded `orca` (resolve the CLI name through `lib/detect.sh`).
 - Tool inventories belong in `manifest/` — never duplicate per-platform package lists inside scripts.
 - Tests: bats for unit tests, the Docker matrix for Linux integration.
-- Keep documentation in sync with behaviour; update the relevant section of `README.md` in the same change.
+- Keep documentation in sync with behaviour. Keep `README.md` short and user-facing; put command-line procedures in `AGENT-OPERATIONS.md` and implementation details in `DESIGN.md`.

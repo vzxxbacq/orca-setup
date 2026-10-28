@@ -74,7 +74,7 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
   --network-mode direct|isolated
                  Linux servers: direct (existing bridge networking) or isolated (transparent proxy gateway
                  and a separate LAN-only executor). The last mode is kept; first install defaults to direct.
-                 Isolated mode requires manifest/local/server-network.env; see README section 3.3.3.
+                 Isolated mode requires manifest/local/server-network.env; see DESIGN.md section 3.3.3.
 
 Optional modules (installed only together with --apply; --check also checks the ones given):
   --power --containers --apple --android --media --agent-gemini --gpu
@@ -175,7 +175,7 @@ if [ "$action" = tui ]; then
 fi
 server_config_load
 [ "$action" != auth ] || [ -z "$modules" ] || die "modules run only with --apply (or show with --plan, or check with --check): $modules"
-[ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (README section 5.1).'
+[ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (DESIGN.md section 5.1).'
 [ "$check_json" = no ] || [ "$action" = check ] || die '--json works only with --check.'
 [ "$upgrade_image" = no ] || [ "$action" = apply ] || [ "$action" = plan ] || die '--upgrade-image works only with --apply (or --plan).'
 [ -z "$workdir" ] || [ "$action" != auth ] || die '--workdir does not apply to --auth-*.'
@@ -207,14 +207,14 @@ if [ -n "$pairing_address" ]; then
   [ "$role" != client ] || die '--pairing-address is for --role server; a client never serves or advertises an address.'
   ! in_container || die "--pairing-address belongs to the Docker host: run ./setup.sh there (over SSH), not inside the $ORCA_SERVER_NAME container."
   problem=$(pairing_address_problem "$pairing_address")
-  [ -z "$problem" ] || die "--pairing-address $pairing_address is refused: $problem. Use the private address clients dial (README section 1)."
+  [ -z "$problem" ] || die "--pairing-address $pairing_address is refused: $problem. Use the private address clients dial (DESIGN.md section 1)."
 fi
 if [ -n "$publish_address" ]; then
   [ "$PLATFORM" = debian ] || die '--publish-address is for Linux servers (Orca in Docker); macOS runs the desktop app.'
   [ "$role" != client ] || die '--publish-address is for --role server; a client runs no Orca server.'
   ! in_container || die "--publish-address belongs to the Docker host: run ./setup.sh there (over SSH), not inside the $ORCA_SERVER_NAME container."
   problem=$(publish_address_problem "$publish_address")
-  [ -z "$problem" ] || die "--publish-address $publish_address is refused: $problem. Use this host's own private IPv4 address that clients reach (README section 3.3.2)."
+  [ -z "$problem" ] || die "--publish-address $publish_address is refused: $problem. Use this host's own private IPv4 address that clients reach (DESIGN.md section 3.3.2)."
 fi
 if in_container; then
   [ "$role" != client ] || die "the $ORCA_SERVER_NAME container is a server; --role client does not apply here."
@@ -222,7 +222,7 @@ if in_container; then
     die "--workdir and --upgrade-image belong to the Docker host: run ./setup.sh there (over SSH), not inside the $ORCA_SERVER_NAME container."
 fi
 
-# SERVER_HOST=yes: a Linux host whose Orca server runs in Docker (README section 6.7). WORKDIR is its --workdir;
+# SERVER_HOST=yes: a Linux host whose Orca server runs in Docker (DESIGN.md section 6.7). WORKDIR is its --workdir;
 # PUBLISH_ADDRESS the host address its port is published on (empty when there is none yet), and PUBLISH_PROBLEM why
 # Docker could not publish it there.
 SERVER_HOST=no
@@ -470,7 +470,7 @@ do_plan() {
     info 'Pairing role check (--apply): after the baseline install, before any Orca step'
     case "$role" in
       client) info 'Orca client: Orca and its CLI only; no server unit and no pairing offer on this device' ;;
-      *) info 'Orca server: --role server --pairing-address <ip-or-host> runs it in Docker instead (README section 6.7)' ;;
+      *) info 'Orca server: --role server --pairing-address <ip-or-host> runs it in Docker instead (DESIGN.md section 6.7)' ;;
     esac
   fi
   [ "$SERVER_HOST" = yes ] || print_orca_plan
@@ -619,7 +619,7 @@ orca_release_repo() {
 }
 
 # check_orca_version: the installed Orca version and the latest stable release. Reported, never counted, and
-# never acted on: setup.sh does not upgrade Orca (README section 3.3.1).
+# never acted on: setup.sh does not upgrade Orca (DESIGN.md section 3.3.1).
 check_orca_version() {
   local installed available repo
   installed=$("$ORCA_CLI" --version 2>/dev/null | grep -Eo '[0-9]+[.][0-9]+[.][0-9]+[^ ]*' | head -n 1) || installed=''
@@ -764,7 +764,7 @@ print_check_json() {
   printf '{\n  "schema": "orca-setup-check/1",\n'
   printf '  "device": {"os": %s, "distro": %s, "arch": %s},\n' "$(json_string "$OS")" "$(json_string "$(report_distro)")" "$(json_string "$ARCH")"
   printf '  "role": {"requested": %s, "detected": %s},\n' "$(if [ -n "$role" ]; then json_string "$role"; else echo null; fi)" "$(json_string "${DETECTED_ROLE:-unknown}")"
-  # A Linux server in Docker (README section 6.7) adds what its host reported: image, newest digest, container state
+  # A Linux server in Docker (DESIGN.md section 6.7) adds what its host reported: image, newest digest, container state
   # and workdir.
   if in_container || [ "$SERVER_HOST" = yes ]; then
     printf '  "server": {"form": "docker"'

@@ -296,7 +296,7 @@ debian_plan() {
   case "$1" in apt:* | apt-repo:* | orca-deb:* | github-release:*) DEBIAN_MODE=plan debian_install "$1" ;; esac
 }
 
-# The Orca .deb may not declare every library its Electron runtime loads (README section 3.3.1): name the missing
+# The Orca .deb may not declare every library its Electron runtime loads (DESIGN.md section 3.3.1): name the missing
 # ones before any Orca step instead of failing later inside orca-ide.
 require_orca_libraries() {
   local libs

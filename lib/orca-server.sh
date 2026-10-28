@@ -1,5 +1,5 @@
 # shellcheck shell=bash disable=SC2154 # setup.sh sets pairing_address, publish_address, PUBLISH_*, upgrade_image, task_source, modules
-# The Linux server (--role server, README section 6.7): Orca and every agent run in the orca-server container from
+# The Linux server (--role server, DESIGN.md section 6.7): Orca and every agent run in the orca-server container from
 # ghcr.io/vzxxbacq/orca-server; the host gets Docker Engine only (lib/docker-host.sh). The container runs as the
 # user's UID:GID with the user's home path as HOME, on its compose project's bridge network with port 6768 published
 # on one private host address only (the publish address), with a read-only root filesystem; its home is a dedicated
@@ -264,7 +264,7 @@ server_volume() { # <host path> <container path> [ro]
   printf '        bind:\n          create_host_path: false\n'
 }
 
-# The host's manifest/local/ (README section 3.7) as the container's own /opt/orca-setup/manifest/local (read-only):
+# The host's manifest/local/ (DESIGN.md section 3.7) as the container's own /opt/orca-setup/manifest/local (read-only):
 # the image has no overlay, and the setup.sh inside the container applies the Orca settings and skills.
 server_overlay_dir() { printf '%s/manifest-local\n' "$(server_config_dir)"; }
 
@@ -386,7 +386,7 @@ server_lock_write() {
   info "+ write $(tilde "$file") ($2${3:+, built: $3})"
   mkdir -p "$(dirname "$file")"
   {
-    printf '# orca-setup: the Orca server image this host runs (README section 6.7). --apply keeps it; only\n'
+    printf '# orca-setup: the Orca server image this host runs (DESIGN.md section 6.7). --apply keeps it; only\n'
     printf '# ./setup.sh --apply --role server --upgrade-image replaces it with the newest one.\n'
     printf 'source=%s\nimage=%s\n' "$1" "$2"
     [ -z "${3:-}" ] || printf 'local=%s\nlocal-source=%s\n' "$3" "$4"
@@ -583,7 +583,7 @@ server_dirs_plan() {
     info "  link     $(tilde "$(server_orca_link)") -> $1 (Orca's workspace directory stays ~/orca/workspaces in the container)"
 }
 
-# server_role_check: the pairing role (README section 5.1) from ~/.orca, read-only, inside the image (the host has
+# server_role_check: the pairing role (DESIGN.md section 5.1) from ~/.orca, read-only, inside the image (the host has
 # neither Node.js nor Orca); before the container starts.
 server_role_check() {
   local status=0
@@ -662,7 +662,7 @@ server_container_apply() { # <workdir>
 
 # ---------------------------------------------------------------- plan, apply
 
-# The systemd user unit of the native Linux server that orca-setup wrote before P5 (README section 6.7): its Orca
+# The systemd user unit of the native Linux server that orca-setup wrote before P5 (DESIGN.md section 6.7): its Orca
 # would share ~/.orca and port 6768 with the container.
 legacy_serve_unit() {
   local path=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/orca-serve.service
@@ -675,9 +675,9 @@ legacy_serve_unit_steps() { # <unit path>
 
 server_plan() { # <workdir>
   local legacy
-  info 'Orca server in Docker (--apply --role server; README section 6.7):'
+  info 'Orca server in Docker (--apply --role server; DESIGN.md section 6.7):'
   if [ -z "$pairing_address" ]; then
-    info '  missing  --pairing-address <ip-or-host>: the private address clients dial (README section 1); --apply requires it'
+    info '  missing  --pairing-address <ip-or-host>: the private address clients dial (DESIGN.md section 1); --apply requires it'
   else
     info "  address  $pairing_address (advertised to clients)"
   fi
@@ -715,10 +715,10 @@ server_plan() { # <workdir>
   info '           read-only root filesystem with a tmpfs /tmp, restart unless-stopped, no sudo and no Docker inside'
   info "  network  the compose project's bridge network; only port $ORCA_SERVER_PORT is published, on ${PUBLISH_ADDRESS:-the publish address} alone"
   info "           Docker's bridge networking turns on IPv4 forwarding and adds its own iptables rules; when it turns"
-  info '           forwarding on itself it also sets the iptables FORWARD policy to DROP (README section 8)'
+  info '           forwarding on itself it also sets the iptables FORWARD policy to DROP (DESIGN.md section 8)'
   info "  start    docker compose up --detach (when not running as rendered); wait until \`orca-ide status\` in it reaches the runtime"
   info "  orca     skills and settings inside it: docker exec $ORCA_SERVER_NAME $ORCA_SERVER_ROOT/setup.sh $(server_setup_args no --apply | paste -sd ' ' -)"
-  info '  pairing  TUI maintenance pairing shows a link/QR; Orca sessions may stop, containers stay running (README section 3.3.2)'
+  info '  pairing  TUI maintenance pairing shows a link/QR; Orca sessions may stop, containers stay running (DESIGN.md section 3.3.2)'
 }
 
 server_internal_ssh_ready() {
@@ -750,11 +750,11 @@ server_apply() { # <workdir>
     server_network_load || die 'isolated networking requires a valid local network policy; nothing has been changed.'
   fi
   [ -n "$pairing_address" ] ||
-    die '--apply --role server on Linux requires --pairing-address <ip-or-host>, the private address clients dial (README section 3.3.2).'
+    die '--apply --role server on Linux requires --pairing-address <ip-or-host>, the private address clients dial (DESIGN.md section 3.3.2).'
   [ -n "$PUBLISH_ADDRESS" ] ||
-    die "--pairing-address $pairing_address is a host name, so --apply --role server also needs --publish-address <ipv4>: this host's own private IPv4 address that Docker publishes port $ORCA_SERVER_PORT on (README section 3.3.2)."
+    die "--pairing-address $pairing_address is a host name, so --apply --role server also needs --publish-address <ipv4>: this host's own private IPv4 address that Docker publishes port $ORCA_SERVER_PORT on (DESIGN.md section 3.3.2)."
   [ -z "$PUBLISH_PROBLEM" ] ||
-    die "port $ORCA_SERVER_PORT cannot be published on $PUBLISH_ADDRESS ($(server_publish_source)): $PUBLISH_PROBLEM. Pass --publish-address <ipv4>, this host's own private IPv4 address that clients reach (README section 3.3.2)."
+    die "port $ORCA_SERVER_PORT cannot be published on $PUBLISH_ADDRESS ($(server_publish_source)): $PUBLISH_PROBLEM. Pass --publish-address <ipv4>, this host's own private IPv4 address that clients reach (DESIGN.md section 3.3.2)."
   if legacy=$(legacy_serve_unit); then
     die "the native Orca server unit an earlier orca-setup wrote is still installed ($(tilde "$legacy")); its Orca would share ~/.orca and port $ORCA_SERVER_PORT with the container. Remove it first: $(legacy_serve_unit_steps "$legacy")"
   fi
@@ -891,14 +891,14 @@ server_exec_setup() {
   dk exec ${flags[@]+"${flags[@]}"} "$ORCA_SERVER_NAME" "$ORCA_SERVER_ROOT/setup.sh" "$@"
 }
 
-# server_auth <name...>: the interactive logins, inside the container (README section 3.4).
+# server_auth <name...>: the interactive logins, inside the container (DESIGN.md section 3.4).
 server_auth() {
   local name flags=(--interactive) args=()
   docker_connect || die "Docker does not answer; the logins run inside the $ORCA_SERVER_NAME container (see ./setup.sh --check)."
   [ "$(server_container_state | cut -d' ' -f1)" = running ] ||
     die "the $ORCA_SERVER_NAME container is not running; start it with ./setup.sh --apply --role server --pairing-address <address>."
   [ ! -t 0 ] || [ ! -t 1 ] || flags+=(--tty)
-  # agy prints its sign-in URL only in an SSH session (README section 3.4).
+  # agy prints its sign-in URL only in an SSH session (DESIGN.md section 3.4).
   for name in SSH_CONNECTION SSH_TTY; do [ -z "${!name:-}" ] || flags+=(--env "$name"); done
   for name in "$@"; do args+=("--auth-$name"); done
   info "+ docker exec ${flags[*]} $ORCA_SERVER_NAME $ORCA_SERVER_ROOT/setup.sh ${args[*]}"

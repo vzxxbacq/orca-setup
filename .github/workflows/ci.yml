@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # The image built from this commit, served by a local registry so setup.sh pulls and locks it like the
-      # published one (README section 6.7); never pushed anywhere else.
+      # published one (DESIGN.md section 6.7); never pushed anywhere else.
       ORCA_SETUP_IMAGE: localhost:5000/orca-server:ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -211,7 +211,7 @@ else
   echo '::endgroup::'
 
   echo '::group::the pairing command publishes the same way'
-  # README section 3.3.2, run where the rendered compose.yaml is, plus --no-pairing (CI never creates a pairing
+  # DESIGN.md section 3.3.2, run where the rendered compose.yaml is, plus --no-pairing (CI never creates a pairing
   # offer), detached and named for the checks.
   (
     cd "$(dirname "$compose")"

@@ -1,4 +1,4 @@
-# Organization-specific tools for the Linux server (README section 3.3.2). Renamed to manifest/local/Dockerfile,
+# Organization-specific tools for the Linux server (DESIGN.md section 3.3.2). Renamed to manifest/local/Dockerfile,
 # setup.sh builds it on top of the locked Orca server image (ORCA_SERVER_IMAGE) and runs the result instead. Files
 # next to it in manifest/local/ are its build context. The container runs as your user without sudo, so install
 # everything here, system-wide.

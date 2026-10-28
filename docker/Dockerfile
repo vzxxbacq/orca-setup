@@ -1,4 +1,4 @@
-# The Orca server image (README section 6.7): Orca's headless runtime and every agent for a Linux server, published
+# The Orca server image (DESIGN.md section 6.7): Orca's headless runtime and every agent for a Linux server, published
 # as ghcr.io/vzxxbacq/orca-server by .github/workflows/ci.yml. Built from the repository root:
 #   docker build --file docker/Dockerfile .
 # No package list lives here: docker/build.sh installs everything from manifest/ through the lib/ code setup.sh uses.

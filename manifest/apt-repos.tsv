@@ -6,7 +6,7 @@
 #                 other primary key is refused before it is trusted
 #   keyring       file name under /etc/apt/keyrings/ (signed-by=)
 #   list          file name under /etc/apt/sources.list.d/
-#   uri suite components   the apt source; the architecture is always amd64 (README section 1)
+#   uri suite components   the apt source; the architecture is always amd64 (DESIGN.md section 1)
 # {distro} and {codename} in a URL or the suite stand for this device's os-release ID and release code name
 # (ubuntu/noble, debian/bookworm).
 # File names and source lines follow each vendor's own instructions, so a repository set up by hand is recognized.

@@ -1,4 +1,4 @@
-# The Orca server container (Linux --role server, README section 6.7): directories bind-mounted at the same absolute
+# The Orca server container (Linux --role server, DESIGN.md section 6.7): directories bind-mounted at the same absolute
 # path on the host and in the container. setup.sh creates each one, owned by you, before the container starts.
 # Columns (tab-separated):
 #   path      {workdir} for --workdir (default ~/orca), otherwise relative to your home directory

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pairing role check (README section 5.1). Read-only.
+# Pairing role check (DESIGN.md section 5.1). Read-only.
 #
 # A client saves environments (it dials servers); a server accepts runtime pairings (it is dialed).
 # Saved environments come from `<orca> environment list --json`; runtime clients come from the device

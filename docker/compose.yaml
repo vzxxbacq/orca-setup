@@ -1,9 +1,9 @@
 # orca-setup: Orca server container for this user
-# Rendered by `./setup.sh --apply --role server` from docker/compose.yaml (README section 6.7) into
+# Rendered by `./setup.sh --apply --role server` from docker/compose.yaml (DESIGN.md section 6.7) into
 # ~/.config/orca-setup/docker/compose.yaml; rerun it to change this file instead of editing it. The first line marks
 # the file as orca-setup's, and x-orca-setup records the options it was rendered with.
 # --no-pairing: normal service never creates an offer. Pair a client using
-# interactive maintenance pairing in the TUI instead (README section 3.3.2).
+# interactive maintenance pairing in the TUI instead (DESIGN.md section 3.3.2).
 name: @PROJECT@
 x-orca-setup:
   workdir: "@WORKDIR@"

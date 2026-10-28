@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The Linux server in Docker (P5, README section 6.7): Docker Engine on the host, the docker group and sg, the
+# The Linux server in Docker (P5, DESIGN.md section 6.7): Docker Engine on the host, the docker group and sg, the
 # directories, the publish address, compose.yaml, the image lock, the container, the logins and the combined --check,
 # against fake apt, sudo, gpg, docker, sg, ip and Orca. Nothing here runs apt, sudo or Docker for real.
 
