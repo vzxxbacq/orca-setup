@@ -42,6 +42,8 @@ process_group apply baseline agents.tsv
 for group in $IMAGE_GROUPS; do process_group apply "$group" "$(group_manifest "$group")"; done
 require_orca_libraries
 
+bash "$ORCA_SETUP_ROOT/docker/install-shell.sh"
+
 # Caches and package lists do not belong in the image.
 apt-get clean
 rm -rf /var/lib/apt/lists/* "$HOME/.npm" "$HOME/.cache"

@@ -2,7 +2,7 @@
   orca-gateway:
     image: "@IMAGE@"
     pull_policy: never
-    container_name: orca-gateway
+    container_name: @GATEWAY_NAME@
     hostname: "@HOSTNAME@"
     entrypoint: ["/opt/orca-setup/docker/gateway.sh", "orca"]
     user: "0:0"
@@ -44,11 +44,11 @@
   executor-gateway:
     image: "@IMAGE@"
     pull_policy: never
-    container_name: executor-gateway
+    container_name: @EXECUTOR_GATEWAY_NAME@
     entrypoint: ["/opt/orca-setup/docker/gateway.sh", "executor"]
     user: "0:0"
     cap_drop: ["ALL"]
-    cap_add: ["NET_ADMIN"]
+    cap_add: @EXECUTOR_CAPS@
     security_opt: ["no-new-privileges:true"]
     read_only: true
     tmpfs: ["/tmp:mode=1777"]
@@ -70,6 +70,8 @@
         read_only: true
         bind:
           create_host_path: false
+@EXECUTOR_PROXY_AUTH_VOLUME@
+@EXECUTOR_PROXY_AUTH_SERVICE@
     healthcheck:
       test: ["CMD", "/opt/orca-setup/docker/gateway.sh", "check"]
       interval: 5s
@@ -81,7 +83,7 @@
   orca-executor:
     image: "@IMAGE@"
     pull_policy: never
-    container_name: orca-executor
+    container_name: @EXECUTOR_NAME@
     network_mode: "service:executor-gateway"
     depends_on:
       executor-gateway:
@@ -98,6 +100,7 @@
     init: true
     stop_grace_period: 90s
     environment:
+      ORCA_INTERNAL_SSH: "@INTERNAL_SSH@"
       HOME: "@HOME@"
       USER: "@USER@"
       LOGNAME: "@USER@"

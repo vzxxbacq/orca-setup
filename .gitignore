@@ -2,3 +2,4 @@ manifest/local/
 .DS_Store
 __pycache__/
 orca.toml
+*.backups/

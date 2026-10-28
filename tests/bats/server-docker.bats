@@ -28,6 +28,8 @@ setup() {
   fake_ip "$ADDRESS"
   COMPOSE=$HOME/.config/orca-setup/docker/compose.yaml
   LOCK=$HOME/.config/orca-setup/docker/image.lock
+  PROJECT_NAME=$(. "$REPO_ROOT/lib/orca-server.sh"; server_project_name)
+  SERVER_NAME=$(. "$REPO_ROOT/lib/orca-server.sh"; server_container_name orca-server)
   # No systemd unless a test boots the fake one (the machine running the tests may have it).
   export ORCA_SETUP_SYSTEMD_RUN_DIR=$SB/no-systemd
 }
@@ -49,6 +51,7 @@ no_secret() {
 
 snapshot() { # snapshot <name>: compare $output (sandbox paths shown as <sandbox>) with a fixture, or rewrite it
   local file=$BATS_TEST_DIRNAME/fixtures/$1 normalized=${output//$SB/<sandbox>}
+  normalized=${normalized//$SERVER_NAME/<server-container>}
   if [ -n "${UPDATE_SNAPSHOTS:-}" ]; then printf '%s\n' "$normalized" >"$file"; fi
   "$REAL_DIFF" -u "$file" <(printf '%s\n' "$normalized")
 }
@@ -120,7 +123,7 @@ only_present() {
   run grep -n -e '^docker pull ' -e '^docker run ' -e '^docker compose ' -e '^docker exec .*setup.sh --apply' "$FAKE_LOG"
   [[ "${lines[0]}" == *"docker pull $IMAGE:main" ]]
   [[ "${lines[1]}" == *"docker run $IMAGE@sha256:$D1 /opt/orca-setup/orca/role.sh --expect server" ]]
-  [[ "${lines[2]}" == *"docker compose --file $COMPOSE up --detach" ]]
+  [[ "${lines[2]}" == *"docker compose --file $COMPOSE --project-name $PROJECT_NAME up --detach" ]]
   [[ "${lines[3]}" == *'docker exec /opt/orca-setup/setup.sh --apply --role server' ]]
   # The settings were aligned by the setup.sh inside the container.
   [ "$(cat "$SB/orca-settings.json")" = '{"defaultTuiAgent":"codex","agentStatusHooksEnabled":true}' ]
@@ -139,7 +142,7 @@ only_present() {
   no_secret
   only_present
   [[ "$output" == *"PRESENT image $IMAGE@sha256:$D1"* ]]
-  [[ "$output" == *'PRESENT container orca-server running'* ]]
+  [[ "$output" == *"PRESENT container $SERVER_NAME running"* ]]
   [[ "$output" == *'PRESENT Orca settings'* ]]
   "$REAL_DIFF" "$SB/compose-1" "$COMPOSE"
   # Only reads: the role check and the in-container checks; no pull, build or compose.
@@ -231,7 +234,9 @@ only_present() {
   ! grep -q '@[A-Z_]*@' "$COMPOSE"
   grep -qxF "    image: \"$IMAGE@sha256:$D1\"" "$COMPOSE"
   grep -qxF '    pull_policy: never' "$COMPOSE"
-  grep -qxF "    command: [\"orca-ide\", \"serve\", \"--supervise\", \"--no-pairing\", \"--port\", \"6768\", \"--pairing-address\", \"$ADDRESS\"]" "$COMPOSE"
+  grep -qF 'command: ["python3", "/opt/orca-service.py", "run", "bash"' "$COMPOSE"
+  grep -qF '"serve", "--supervise", "--no-pairing"' "$COMPOSE"
+  [ -f "$HOME/.config/orca-setup/docker/orca-service.py" ]
   # The compose project's bridge network, with exactly one published port: 6768, on the publish address only (by
   # default the IPv4 pairing address), recorded like the pairing address; the host's name, not the container's id.
   run ! grep -q network_mode "$COMPOSE"
@@ -460,7 +465,7 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   run_setup --apply --role server --pairing-address devbox.example.net --publish-address 192.0.2.10
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   grep -qxF '      - "192.0.2.10:6768:6768/tcp"' "$COMPOSE"
-  grep -qx "docker compose --file $COMPOSE up --detach" "$FAKE_LOG"
+  grep -qx "docker compose --file $COMPOSE --project-name $PROJECT_NAME up --detach" "$FAKE_LOG"
   [ "$(sed -n 2p "$SB/docker/ports")" = '192.0.2.10|6768|6768/tcp' ]
   # A given address stays when the pairing address changes; a default (the pairing address) follows it.
   run_setup --apply --role server --pairing-address "$ADDRESS"
@@ -497,7 +502,7 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   grep -qx "image=$IMAGE@sha256:$D2" "$LOCK"
   grep -qxF "    image: \"$IMAGE@sha256:$D2\"" "$COMPOSE"
   grep -qx "docker pull $IMAGE:main" "$FAKE_LOG"
-  grep -qx "docker compose --file $COMPOSE up --detach" "$FAKE_LOG"
+  grep -qx "docker compose --file $COMPOSE --project-name $PROJECT_NAME up --detach" "$FAKE_LOG"
   # The newest is already locked: nothing to re-create.
   : >"$FAKE_LOG"
   apply_server --upgrade-image
@@ -592,7 +597,7 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   export ORCA_SETUP_SERVE_WAIT=0
   apply_server
   [ "$status" -eq 1 ]
-  [[ "$output" == *'the Orca runtime in orca-server is not reachable 0s after it started; see: docker logs orca-server'* ]]
+  [[ "$output" == *"the Orca runtime in $SERVER_NAME is not reachable 0s after it started; see: docker logs $SERVER_NAME"* ]]
   [[ "$output" != *BASELINE_DONE* ]]
 }
 
@@ -608,12 +613,12 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   : >"$FAKE_LOG"
   SSH_CONNECTION='198.51.100.1 50000 198.51.100.2 22' run_setup --auth-gh
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
-  [[ "$output" == *'+ docker exec --interactive --env SSH_CONNECTION orca-server /opt/orca-setup/setup.sh --auth-gh'* ]]
+  [[ "$output" == *"+ docker exec --interactive --env SSH_CONNECTION $SERVER_NAME /opt/orca-setup/setup.sh --auth-gh"* ]]
   grep -qx 'gh auth login --hostname github.com --git-protocol https --web GH_BROWSER=true container=orca-server' "$FAKE_LOG"
   echo exited >"$SB/docker/container"
   run_setup --auth-codex
   [ "$status" -eq 1 ]
-  [[ "$output" == *'the orca-server container is not running'* ]]
+  [[ "$output" == *"the $SERVER_NAME container is not running"* ]]
 }
 
 # ------------------------------------------------------------------ check
@@ -669,7 +674,7 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   echo "exited $(sed -n 's/^      org.orca-setup.config: "\(.*\)"$/\1/p' "$COMPOSE")" >"$SB/docker/container"
   run_setup --check
   [[ "$output" == *'Orca server container: INACTIVE (exited; --apply starts it)'* ]]
-  [[ "$output" == *'Container checks (tools, logins, Orca): UNREACHABLE (the orca-server container is not running'* ]]
+  [[ "$output" == *"Container checks (tools, logins, Orca): UNREACHABLE (the $SERVER_NAME container is not running"* ]]
   [ "$status" -eq 2 ] || { echo "$output"; return 1; }
   echo 'running 0-0' >"$SB/docker/container"
   run_setup --check --json
@@ -758,4 +763,33 @@ publish_problem() { (. "$REPO_ROOT/lib/common.sh"; . "$REPO_ROOT/lib/orca-server
   [ "$status" -eq 1 ]
   [[ "$output" == *'the orca-server container is a server'* ]]
   no_calls
+}
+
+@test "new deployment names are stable, scoped by user/config directory, and used by the rendered server" {
+  . "$REPO_ROOT/lib/orca-server.sh"
+  first=$(server_project_name)
+  [[ "$first" =~ ^orca-1000-[a-f0-9]{12}$ ]]
+  [ "$(server_project_name)" = "$first" ]
+  [ ! -e "$(server_config_dir)" ]
+  other=$(XDG_CONFIG_HOME=$SB/another-config server_project_name)
+  [ "$other" != "$first" ]
+  image_tools
+  apply_server
+  [ "$status" -eq 0 ]
+  grep -qx "name: $first" "$COMPOSE"
+  grep -qx "    container_name: $first-server" "$COMPOSE"
+  [ "$(server_project_name)" = "$first" ]
+}
+
+@test "legacy deployment names are preserved; archived config is reused after uninstall" {
+  mkdir -p "$(dirname "$COMPOSE")"
+  printf '# orca-setup: Orca server container for this user\nname: orca-server\nx-orca-setup:\n  config-file: "%s"\n' "$SB/custom.toml" >"$COMPOSE"
+  . "$REPO_ROOT/lib/orca-server.sh"
+  [ "$(server_project_name)" = orca-server ]
+  [ "$(server_container_name orca-server)" = orca-server ]
+  [ "$(server_container_name executor-gateway)" = executor-gateway ]
+  cp "$COMPOSE" "$(dirname "$COMPOSE")/compose.uninstalled.yaml"
+  rm "$COMPOSE"
+  [ "$(server_compose_value config-file)" = "$SB/custom.toml" ]
+  [ "$(server_project_name)" != orca-server ]
 }

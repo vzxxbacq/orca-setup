@@ -18,11 +18,11 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = {
-    "server": {"role", "image", "image_source", "pairing_address", "publish_address", "workdir", "task_source"},
+    "server": {"role", "image", "image_source", "pairing_address", "publish_address", "workdir", "task_source", "home_mount", "internal_ssh"},
     "network": {"mode", "control_subnet"},
     "proxy": {"type", "address", "port", "username", "password", "auth_file"},
     "dns": {"address", "transport", "tls_name"},
-    "executor": {"dns", "allow"},
+    "executor": {"dns", "allow", "internet", "proxy"},
     "limits": {"mem_limit", "memswap_limit", "pids_limit", "cpus"},
 }
 
@@ -80,8 +80,9 @@ def filename(value, parent):
     return str(path)
 
 
-def load(path):
+def load(path, logical_path=None):
     path = Path(path).expanduser().resolve()
+    config_path = Path(logical_path).expanduser().resolve() if logical_path else path
     try:
         with path.open("rb") as source:
             metadata = os.fstat(source.fileno())
@@ -100,6 +101,12 @@ def load(path):
     require(mode in ("direct", "isolated"), "network.mode must be direct or isolated")
     require(mode == "isolated" or not proxy, "a proxy table requires isolated network mode")
     public = {"role": "server", "network_mode": mode}
+    internal_ssh = server.get("internal_ssh", False)
+    require(type(internal_ssh) is bool, "server.internal_ssh must be true or false")
+    require(not internal_ssh or mode == "isolated", "server.internal_ssh requires isolated networking")
+    public["internal_ssh"] = "yes" if internal_ssh else "no"
+    public["home_mount"] = server.get("home_mount", "dedicated")
+    require(public["home_mount"] in ("dedicated", "host"), "server.home_mount must be dedicated or host")
     for key in ("pairing_address", "publish_address", "workdir", "image", "task_source"):
         if key in server:
             public[key] = text(server[key])
@@ -107,7 +114,7 @@ def load(path):
         address(public["publish_address"])
     if "workdir" in public:
         # A relative workdir is relative to the TOML, not the caller's current directory.
-        public["workdir"] = filename(public["workdir"], path.parent)
+        public["workdir"] = filename(public["workdir"], config_path.parent)
     if "task_source" in public:
         require(public["task_source"] in ("", "linear"), "unsupported server.task_source")
     image_source = server.get("image_source", "registry")
@@ -145,7 +152,7 @@ def load(path):
     if inline:
         require(metadata.st_uid == os.getuid() and stat.S_IMODE(metadata.st_mode) in (0o600, 0o400),
                 "inline credentials require a caller-owned configuration with mode 0600 or 0400")
-        require(not path.is_relative_to(ROOT) or path == ROOT / "orca.toml",
+        require(not config_path.is_relative_to(ROOT) or config_path == ROOT / "orca.toml",
                 "inline credentials belong outside the checkout or in the ignored root orca.toml")
         auth = {key: proxy.get(key) for key in ("username", "password")}
         require(all(isinstance(value, str) and 1 <= len(value) <= 255 and
@@ -153,7 +160,40 @@ def load(path):
                 "proxy credentials require 1-255 printable ASCII characters per field")
         public["proxy_auth_file"] = "/run/secrets/orca_proxy_auth"
     elif "auth_file" in proxy:
-        public["proxy_auth_file"] = filename(proxy["auth_file"], path.parent)
+        public["proxy_auth_file"] = filename(proxy["auth_file"], config_path.parent)
+    executor_mode = executor.get("internet", "blocked")
+    require(executor_mode in ("blocked", "direct", "proxy"), "executor.internet must be blocked, direct or proxy")
+    require(mode == "isolated" or executor_mode == "blocked", "executor.internet requires isolated network mode")
+    require(executor_mode == "proxy" or "proxy" not in executor, "executor.proxy requires executor.internet = proxy")
+    executor_proxy = executor.get("proxy")
+    require(executor_proxy is None or isinstance(executor_proxy, dict), "executor.proxy must be a table")
+    if executor_proxy is not None:
+        require(set(executor_proxy) <= SCHEMA["proxy"], "unknown executor.proxy key")
+    executor_proxy = proxy if executor_proxy is None else executor_proxy
+    public["executor_internet"] = executor_mode
+    public["executor_proxy_type"] = executor_proxy.get("type", defaults["proxy_type"])
+    public["executor_proxy_address"] = executor_proxy.get("address", defaults["proxy_address"])
+    public["executor_proxy_port"] = str(port(executor_proxy.get("port", int(defaults["proxy_port"]))))
+    public["executor_proxy_inline_auth"] = "no"
+    public["executor_proxy_auth_file"] = ""
+    executor_auth = None
+    if executor_mode == "proxy":
+        require(public["executor_proxy_type"] in ("socks5", "http-connect"), "unsupported executor.proxy.type")
+        public["executor_proxy_address"] = address(public["executor_proxy_address"])
+        exec_inline = "username" in executor_proxy or "password" in executor_proxy
+        require(not (exec_inline and "auth_file" in executor_proxy), "executor proxy authentication forms are mutually exclusive")
+        if exec_inline:
+            require(metadata.st_uid == os.getuid() and stat.S_IMODE(metadata.st_mode) in (0o600, 0o400),
+                    "inline credentials require a caller-owned configuration with mode 0600 or 0400")
+            require(not config_path.is_relative_to(ROOT) or config_path == ROOT / "orca.toml",
+                    "inline credentials belong outside the checkout or in the ignored root orca.toml")
+            executor_auth = {key: executor_proxy.get(key) for key in ("username", "password")}
+            require(all(isinstance(v, str) and 1 <= len(v) <= 255 and all(32 <= ord(c) <= 126 for c in v)
+                        for v in executor_auth.values()), "executor proxy credentials require printable ASCII fields")
+            public["executor_proxy_inline_auth"] = "yes"
+            public["executor_proxy_auth_file"] = "/run/secrets/orca_proxy_auth"
+        elif "auth_file" in executor_proxy:
+            public["executor_proxy_auth_file"] = filename(executor_proxy["auth_file"], config_path.parent)
     rules = executor.get("allow", [])
     require(isinstance(rules, list), "executor.allow must be an array of tables")
     public["allow"] = []
@@ -178,14 +218,14 @@ def load(path):
     for value in public.values():
         if isinstance(value, str):
             text(value)
-    return public, auth
+    return public, {"orca": auth, "executor": executor_auth}
 
 
 def main():
     require(len(sys.argv) >= 3, "usage: server-config.py public|secret|check-mounts FILE [DIRECTORY ...]")
     public, auth = load(sys.argv[2])
     if sys.argv[1] == "check-mounts":
-        if auth is not None:
+        if any(value is not None for value in auth.values()):
             path = Path(sys.argv[2]).resolve()
             require(not any(path.is_relative_to(Path(directory).resolve()) for directory in sys.argv[3:]),
                     "inline proxy TOML must be outside application data mounts and the shared workdir")
@@ -198,10 +238,11 @@ def main():
                     print(key + "\t" + item)
             else:
                 print(key + "\t" + value)
-    elif sys.argv[1] == "secret":
-        require(auth is not None, "the configuration has no inline proxy credentials")
+    elif sys.argv[1] in ("secret", "secret-executor"):
+        credentials = auth["executor" if sys.argv[1] == "secret-executor" else "orca"]
+        require(credentials is not None, "the configuration has no inline proxy credentials")
         # This channel must be piped directly to the private gateway publisher/checker, never logged or evaluated.
-        print(json.dumps(auth))
+        print(json.dumps(credentials))
     else:
         raise ConfigError("unknown configuration operation")
 

@@ -9,23 +9,23 @@
 # Rendered by `./setup.sh --apply --role server` from docker/compose.yaml (README section 6.7) into
 # ~/.config/orca-setup/docker/compose.yaml; rerun it to change this file instead of editing it. The first line marks
 # the file as orca-setup's, and x-orca-setup records the options it was rendered with.
-# --no-pairing: the server never creates a pairing offer, so nothing secret reaches its log. Pair a client from an
-# interactive `docker compose run --rm` instead (README section 3.3.2).
-name: orca-server
+# --no-pairing: normal service never creates an offer. Pair a client using
+# interactive maintenance pairing in the TUI instead (README section 3.3.2).
+name: orca-1000-a1b2c3d4e5f6
 x-orca-setup:
   workdir: "/srv/orca-user/orca"
   pairing-address: "server.example.com"
   publish-address: "172.20.0.2"
   network-mode: "isolated"
-  network-policy: "3339422190-138"
+  network-policy: "1591175149-170"
   config-file: "/srv/orca-config/orca.toml"
 services:
   orca-server:
     image: "ghcr.io/vzxxbacq/orca-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     # The image is pulled and locked by setup.sh (image.lock); Compose never pulls or upgrades it.
     pull_policy: never
-    container_name: orca-server
-    command: ["orca-ide", "serve", "--supervise", "--no-pairing", "--port", "6768", "--pairing-address", "server.example.com"]
+    container_name: orca-1000-a1b2c3d4e5f6-server
+    command: ["python3", "/opt/orca-service.py", "run", "bash", "-c", ". /opt/orca-setup/lib/detect.sh; cli=$$(detect_orca_cli); exec \"$$cli\" \"$$@\"", "orca-service", "serve", "--supervise", "--no-pairing", "--port", "6768", "--pairing-address", "server.example.com"]
     # The compose project's own bridge network. Port 6768 is published on one host address only, the private
     # publish address (--publish-address): the host's other addresses (a public one included) do not answer on it.
     # Nothing else is published.
@@ -50,6 +50,7 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     environment:
+      ORCA_INTERNAL_SSH: "no"
       HOME: "/srv/orca-user"
       USER: "orca-user"
       LOGNAME: "orca-user"
@@ -67,9 +68,9 @@ services:
       all_proxy: ""
       no_proxy: ""
     labels:
-      org.orca-setup.config: "2655918933-10730"
-    # The log stays next to the container whatever the daemon's default driver is, so the removed container of a
-    # `docker compose run --rm` (pairing) takes its log with it; journald, syslog or a remote driver would keep it.
+      org.orca-setup.config: "4270307422-8902"
+    # Bound normal-service logs locally. Maintenance pairing output uses a private socket to the terminal
+    # and never enters this log driver.
     logging:
       driver: json-file
       options:
@@ -79,72 +80,18 @@ services:
     memswap_limit: "16g"
     pids_limit: "4096"
     cpus: "4"
-    # Your home directory in the container is a dedicated host directory; the rest are the same paths as on the host
-    # (manifest/server-mounts.tsv). A missing host directory is an error, never created by Docker as root.
+    # The selected host or dedicated home and any additional directories are bind-mounted at their container paths.
+    # A missing host directory is an error, never created by Docker as root.
     volumes:
       - type: bind
-        source: "/srv/orca-user/.local/share/orca-setup/home"
+        source: /srv/orca-config/orca-setup/docker/orca-service.py
+        target: /opt/orca-service.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "/srv/orca-user"
         target: "/srv/orca-user"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/orca"
-        target: "/srv/orca-user/orca"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.orca"
-        target: "/srv/orca-user/.orca"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.codex"
-        target: "/srv/orca-user/.codex"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.claude"
-        target: "/srv/orca-user/.claude"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.config/gh"
-        target: "/srv/orca-user/.config/gh"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.gemini"
-        target: "/srv/orca-user/.gemini"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.antigravity"
-        target: "/srv/orca-user/.antigravity"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.grok"
-        target: "/srv/orca-user/.grok"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.dsh"
-        target: "/srv/orca-user/.dsh"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.dsh-tui"
-        target: "/srv/orca-user/.dsh-tui"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.pi"
-        target: "/srv/orca-user/.pi"
-        bind:
-          create_host_path: false
-      - type: bind
-        source: "/srv/orca-user/.omp"
-        target: "/srv/orca-user/.omp"
         bind:
           create_host_path: false
       - type: bind
@@ -163,7 +110,7 @@ services:
   orca-gateway:
     image: "ghcr.io/vzxxbacq/orca-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     pull_policy: never
-    container_name: orca-gateway
+    container_name: orca-1000-a1b2c3d4e5f6-gateway
     hostname: "example-server"
     entrypoint: ["/opt/orca-setup/docker/gateway.sh", "orca"]
     user: "0:0"
@@ -184,7 +131,7 @@ services:
         ipv4_address: "172.30.70.2"
       outbound: {}
     labels:
-      org.orca-setup.config: "2655918933-10730"
+      org.orca-setup.config: "4270307422-8902"
     volumes:
       - type: bind
         source: "/srv/orca-user/.config/orca-setup/docker/network"
@@ -208,7 +155,7 @@ services:
   executor-gateway:
     image: "ghcr.io/vzxxbacq/orca-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     pull_policy: never
-    container_name: executor-gateway
+    container_name: orca-1000-a1b2c3d4e5f6-executor-gateway
     entrypoint: ["/opt/orca-setup/docker/gateway.sh", "executor"]
     user: "0:0"
     cap_drop: ["ALL"]
@@ -226,7 +173,7 @@ services:
         ipv4_address: "172.30.70.3"
       outbound: {}
     labels:
-      org.orca-setup.config: "2655918933-10730"
+      org.orca-setup.config: "4270307422-8902"
     volumes:
       - type: bind
         source: "/srv/orca-user/.config/orca-setup/docker/network"
@@ -234,6 +181,8 @@ services:
         read_only: true
         bind:
           create_host_path: false
+
+
     healthcheck:
       test: ["CMD", "/opt/orca-setup/docker/gateway.sh", "check"]
       interval: 5s
@@ -245,7 +194,7 @@ services:
   orca-executor:
     image: "ghcr.io/vzxxbacq/orca-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     pull_policy: never
-    container_name: orca-executor
+    container_name: orca-1000-a1b2c3d4e5f6-executor
     network_mode: "service:executor-gateway"
     depends_on:
       executor-gateway:
@@ -262,6 +211,7 @@ services:
     init: true
     stop_grace_period: 90s
     environment:
+      ORCA_INTERNAL_SSH: "no"
       HOME: "/srv/orca-user"
       USER: "orca-user"
       LOGNAME: "orca-user"
@@ -277,7 +227,7 @@ services:
       all_proxy: ""
       no_proxy: ""
     labels:
-      org.orca-setup.config: "2655918933-10730"
+      org.orca-setup.config: "4270307422-8902"
     volumes:
       - type: bind
         source: "/srv/orca-user/.local/share/orca-setup/executor-home"

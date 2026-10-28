@@ -42,6 +42,7 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
                   [--publish-address IPV4] [--workdir DIR] [--upgrade-image] [--network-mode direct|isolated]
                   [modules] [--task-source linear]
        ./setup.sh --config FILE [--plan | --apply | --check [--json]]
+       ./setup.sh --tui [--config FILE]
        ./setup.sh --auth-gh | --auth-codex | --auth-claude | --auth-agy | --auth-linear
 
   --plan         Print what --apply would do on this device (default; read-only).
@@ -55,6 +56,7 @@ Usage: ./setup.sh [--plan | --apply | --check [--json]] [--role client|server] [
                  Defaults to ./orca.toml, then the last applied config. CLI flags override public TOML settings.
                  Requires Python 3.11+. No arguments still only prints the plan; see orca.example.toml.
   --no-config    Explicitly ignore default/recorded TOML and use legacy CLI/manifest settings.
+  --tui          Interactive Linux server configuration, plan, apply and check (requires a terminal and Python 3.11+).
   --pairing-address ADDRESS
                  Linux servers: the private IPv4 address or host name clients dial (Tailscale, LAN,
                  WireGuard). Required for --apply --role server on Linux; never 127.0.0.1 or a wildcard.
@@ -110,6 +112,7 @@ while [ $# -gt 0 ]; do
     --plan) set_action plan ;;
     --apply) set_action apply ;;
     --check) set_action check ;;
+    --tui) set_action tui ;;
     --json) check_json=yes ;;
     --config | --config=*)
       if [ "$1" = --config ]; then [ $# -ge 2 ] || die '--config needs a TOML file'; config_file=$2; shift
@@ -156,6 +159,20 @@ modules=${modules# }
 auths=${auths# }
 require_non_root
 setup_environment
+if [ "$action" = tui ]; then
+  [ -z "$role$pairing_address$publish_address$workdir$network_mode$task_source$modules$auths" ] &&
+    [ "$check_json" = no ] && [ "$upgrade_image" = no ] && [ "$no_config" = no ] ||
+    die '--tui accepts only --config; select other options inside the interface.'
+  [ "$(detect_os)" = linux ] && [ "$(detect_linux_family)" = debian ] && [ "${ORCA_SETUP_CONTAINER:-}" != orca-server ] ||
+    die '--tui is for a supported Linux server host.'
+  [ "$(detect_support)" = supported ] || die '--tui requires a supported Linux server host.'
+  [ -t 0 ] && [ -t 1 ] || die '--tui requires an interactive terminal.'
+  if ! have python3 || ! python3 -c 'import tomllib, curses' >/dev/null 2>&1; then die '--tui requires Python 3.11 or newer with curses.'; fi
+  if [ -z "$config_file" ] && [ -f "$PWD/orca.toml" ]; then config_file=$PWD/orca.toml; fi
+  [ -n "$config_file" ] || config_file=$(server_compose_value config-file)
+  [ -n "$config_file" ] || config_file="${XDG_CONFIG_HOME:-$HOME/.config}/orca-setup/server.toml"
+  exec python3 "$ORCA_SETUP_ROOT/lib/server-tui.py" "$config_file"
+fi
 server_config_load
 [ "$action" != auth ] || [ -z "$modules" ] || die "modules run only with --apply (or show with --plan, or check with --check): $modules"
 [ "$action" != apply ] || [ -n "$role" ] || die '--apply requires --role client or --role server (README section 5.1).'
@@ -216,6 +233,7 @@ if [ "$PLATFORM" = debian ] && ! in_container && [ "$(linux_role)" = server ]; t
 [ -z "$CONFIG_FILE" ] || [ "$SERVER_HOST" = yes ] || die '--config is for Linux server Docker hosts.'
 [ -z "$network_mode" ] || [ "$SERVER_HOST" = yes ] || die '--network-mode belongs to a Linux server Docker host.'
 if [ "$SERVER_HOST" = yes ]; then
+  ORCA_SERVER_NAME=$(server_container_name orca-server)
   NETWORK_PREVIOUS_MODE=$(server_compose_value network-mode)
   NETWORK_PREVIOUS_MODE=${NETWORK_PREVIOUS_MODE:-direct}
   NETWORK_MODE=${network_mode:-$NETWORK_PREVIOUS_MODE}
@@ -234,6 +252,10 @@ if [ "$SERVER_HOST" = yes ] && [ "$action" != auth ] && [ "$SUPPORT" = supported
   [ -z "$problem" ] || die "manifest/server-mounts.tsv (or its local overlay): $problem."
   problem=$(server_workdir_problem "$WORKDIR")
   [ -z "$problem" ] || die "--workdir $WORKDIR is refused: $problem."
+  if [ "$CONFIG_HOME_MOUNT" = host ] && [ "$WORKDIR" != "$HOME/orca" ] &&
+    ! server_host_workdir_link_matches "$WORKDIR"; then
+    die 'host home mounting with a custom workdir requires an existing ~/orca symlink to that workdir; existing home data will not be changed.'
+  fi
   server_config_check_mounts "$WORKDIR"
   PUBLISH_ADDRESS=$(server_publish_address)
   if [ -n "$PUBLISH_ADDRESS" ]; then
@@ -456,7 +478,7 @@ do_plan() {
   info 'Authentication (interactive, run on their own):'
   for name in $AUTHS; do printf '  --auth-%-8s %s\n' "$name" "$("auth_${name}_describe")"; done
   info '  --check         Show baseline and authentication readiness, without printing credentials.'
-  info 'Existing installations and user configuration are preserved. SSH is never configured.'
+  info 'Existing installations and user configuration are preserved. Host SSH is never configured.'
 }
 
 # ---------------------------------------------------------------- apply

@@ -68,6 +68,10 @@ apply_isolated() { run_setup --apply --role server --pairing-address 203.0.113.1
   apply_isolated
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
   [[ "$(cat "$COMPOSE")" != *'@[A-Z_'* ]]
+  project=$(sed -n 's/^name: //p' "$COMPOSE")
+  for suffix in server gateway executor-gateway executor; do
+    grep -qx "    container_name: $project-$suffix" "$COMPOSE"
+  done
   grep -qF 'network_mode: "service:orca-gateway"' "$COMPOSE"
   grep -qF 'network_mode: "service:executor-gateway"' "$COMPOSE"
   [ "$(grep -c '^    ports:' "$COMPOSE")" -eq 1 ]

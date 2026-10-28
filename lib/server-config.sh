@@ -3,7 +3,10 @@
 CONFIG_FILE=''
 CONFIG_IMAGE=''
 CONFIG_IMAGE_SOURCE=registry
+CONFIG_HOME_MOUNT=dedicated
+CONFIG_INTERNAL_SSH=no
 CONFIG_INLINE_AUTH=no
+CONFIG_EXEC_INLINE_AUTH=no
 CONFIG_ALLOW=''
 CONFIG_LIMITS=''
 
@@ -42,7 +45,15 @@ server_config_load() {
       network_mode) network_mode=${network_mode:-$value} ;;
       image) CONFIG_IMAGE=$value ;;
       image_source) CONFIG_IMAGE_SOURCE=$value ;;
+      home_mount) CONFIG_HOME_MOUNT=$value ;;
+      internal_ssh) CONFIG_INTERNAL_SSH=$value ;;
       proxy_inline_auth) CONFIG_INLINE_AUTH=$value ;;
+      executor_proxy_inline_auth) CONFIG_EXEC_INLINE_AUTH=$value ;;
+      executor_internet) CONFIG_EXEC_INTERNET=$value ;;
+      executor_proxy_type) CONFIG_EXEC_PROXY_TYPE=$value ;;
+      executor_proxy_address) CONFIG_EXEC_PROXY_ADDRESS=$value ;;
+      executor_proxy_port) CONFIG_EXEC_PROXY_PORT=$value ;;
+      executor_proxy_auth_file) CONFIG_EXEC_PROXY_AUTH_FILE=$value ;;
       proxy_type) CONFIG_PROXY_TYPE=$value ;;
       proxy_address) CONFIG_PROXY_ADDRESS=$value ;;
       proxy_port) CONFIG_PROXY_PORT=$value ;;
@@ -64,7 +75,14 @@ server_config_network_load() {
   NET_PROXY_AUTH_FILE=$CONFIG_PROXY_AUTH_FILE NET_DNS_ADDRESS=$CONFIG_DNS_ADDRESS NET_DNS_TRANSPORT=$CONFIG_DNS_TRANSPORT
   NET_DNS_TLS_NAME=$CONFIG_DNS_TLS_NAME NET_EXECUTOR_DNS=$CONFIG_EXECUTOR_DNS NET_CONTROL_SUBNET=$CONFIG_CONTROL_SUBNET
   NET_RULES=$CONFIG_ALLOW
-  network_validate && network_validate_rules "$NET_RULES"
+  NET_EXEC_INTERNET=$CONFIG_EXEC_INTERNET NET_EXEC_PROXY_TYPE=$CONFIG_EXEC_PROXY_TYPE
+  NET_EXEC_PROXY_ADDRESS=$CONFIG_EXEC_PROXY_ADDRESS NET_EXEC_PROXY_PORT=$CONFIG_EXEC_PROXY_PORT
+  NET_EXEC_PROXY_AUTH_FILE=$CONFIG_EXEC_PROXY_AUTH_FILE
+  network_validate && network_validate_rules "$NET_RULES" || return 1
+  if [ "$NET_EXEC_INTERNET" = proxy ]; then
+    (NET_PROXY_TYPE=$NET_EXEC_PROXY_TYPE NET_PROXY_ADDRESS=$NET_EXEC_PROXY_ADDRESS NET_PROXY_PORT=$NET_EXEC_PROXY_PORT
+      NET_PROXY_AUTH_FILE=$NET_EXEC_PROXY_AUTH_FILE; network_validate) || return 1
+  fi
 }
 
 server_config_limit_lines() {
@@ -75,7 +93,7 @@ server_config_limit_lines() {
 }
 
 server_config_check_mounts() {
-  [ "$CONFIG_INLINE_AUTH" = yes ] || return 0
+  [ "$CONFIG_INLINE_AUTH" = yes ] || [ "$CONFIG_EXEC_INLINE_AUTH" = yes ] || return 0
   local path work_dir=$1 mounts=()
   while IFS=$'\t' read -r path _; do mounts+=("$path"); done < <(server_mounts "$work_dir")
   mounts+=("$(server_home)" "$(server_overlay_dir)" "$(server_network_dir)" "${XDG_DATA_HOME:-$HOME/.local/share}/orca-setup/executor-home")
@@ -83,28 +101,32 @@ server_config_check_mounts() {
 }
 
 server_config_secret_volume() {
-  printf 'orca-setup-proxy-%s-%s\n' "$(id -u)" "$(printf '%s' "$(server_config_dir)" | cksum | cut -d' ' -f1)"
+  printf 'orca-setup-proxy-%s-%s%s\n' "$(id -u)" "$(printf '%s' "$(server_config_dir)" | cksum | cut -d' ' -f1)" "${1:+-executor}"
 }
 
 server_config_secret_matches() {
-  [ "$CONFIG_INLINE_AUTH" = yes ] || return 0
-  [ "$(server_container_state orca-gateway)" != '' ] || return 1
-  server_config_python secret "$CONFIG_FILE" |
-    dk exec --interactive orca-gateway python3 "$ORCA_SERVER_ROOT/docker/proxy-secret.py" check >/dev/null 2>&1
+  local kind=${1:-orca} gateway=orca-gateway operation=secret enabled=$CONFIG_INLINE_AUTH
+  if [ "$kind" = executor ]; then gateway=executor-gateway; operation=secret-executor; enabled=$CONFIG_EXEC_INLINE_AUTH; fi
+  [ "$enabled" = yes ] || return 0
+  gateway=$(server_container_name "$gateway")
+  [ "$(server_container_state "$gateway")" != '' ] || return 1
+  server_config_python "$operation" "$CONFIG_FILE" |
+    dk exec --interactive "$gateway" python3 "$ORCA_SERVER_ROOT/docker/proxy-secret.py" check >/dev/null 2>&1
 }
 
 server_config_secret_apply() {
-  [ "$CONFIG_INLINE_AUTH" = yes ] || return 0
-  local volume
-  if server_config_secret_matches; then info 'PRESENT private proxy authentication'; return 0; fi
-  volume=$(server_config_secret_volume)
+  local kind=${1:-orca} volume operation=secret enabled=$CONFIG_INLINE_AUTH
+  if [ "$kind" = executor ]; then operation=secret-executor; enabled=$CONFIG_EXEC_INLINE_AUTH; fi
+  [ "$enabled" = yes ] || return 0
+  if server_config_secret_matches "$kind"; then info "PRESENT private $kind proxy authentication"; return 0; fi
+  if [ "$kind" = executor ]; then volume=$(server_config_secret_volume executor); else volume=$(server_config_secret_volume); fi
   if ! dk volume inspect "$volume" >/dev/null 2>&1; then
     dk_step volume create --label org.orca-setup.proxy-secret=true "$volume" >/dev/null
     info '+ create private proxy authentication volume'
   fi
   info '+ synchronize proxy authentication into its private volume (values hidden)'
   # Authentication crosses stdin only. The throwaway publisher has no network, capabilities or host directories.
-  server_config_python secret "$CONFIG_FILE" |
+  server_config_python "$operation" "$CONFIG_FILE" |
     dk run --rm --interactive --network none --read-only --cap-drop ALL --user 0:0 \
       --volume "$volume:/run/secrets" --entrypoint python3 "$SERVER_IMAGE" \
       "$ORCA_SERVER_ROOT/docker/proxy-secret.py" write >/dev/null || die 'private proxy authentication could not be prepared; no direct fallback.'

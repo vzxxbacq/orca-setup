@@ -99,8 +99,39 @@ class ServerConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "ignored root orca.toml"):
                 config.load(self.path)
         public, auth = config.load(ROOT / "orca.example.toml")
-        self.assertIsNone(auth)
+        self.assertEqual(auth, {"orca": None, "executor": None})
         self.assertEqual(public["network_mode"], "isolated")
+
+    def test_executor_proxy_authentication_is_independent_and_never_public(self):
+        self.write('[proxy]\naddress="192.0.2.20"\nusername="main"\npassword="fake-main"\n'
+                   '[executor]\ninternet="proxy"\n[executor.proxy]\naddress="192.0.2.21"\n'
+                   'port=1081\nusername="executor"\npassword="fake-executor"\n')
+        public, auth = config.load(self.path)
+        self.assertEqual(public["executor_internet"], "proxy")
+        self.assertEqual(public["executor_proxy_address"], "192.0.2.21")
+        self.assertEqual(public["executor_proxy_inline_auth"], "yes")
+        self.assertEqual(auth["executor"]["password"], "fake-executor")
+        self.assertNotIn("fake-executor", repr(public))
+        self.assertNotEqual(auth["orca"], auth["executor"])
+        self.write('[proxy]\naddress="192.0.2.20"\nusername="main"\npassword="fake-main"\n'
+                   '[executor]\ninternet="proxy"\n')
+        public, auth = config.load(self.path)
+        self.assertEqual(auth["orca"], auth["executor"])
+        self.assertEqual(public["executor_proxy_address"], "192.0.2.20")
+
+    def test_executor_modes_fail_closed_on_invalid_configuration(self):
+        for value in ('[executor]\ninternet="open"',
+                      '[executor]\ninternet="direct"\n[executor.proxy]\naddress="192.0.2.20"',
+                      '[proxy]\naddress="192.0.2.20"\n[executor]\ninternet="proxy"\n'
+                      '[executor.proxy]\naddress="192.0.2.21"\nusername="only-user"'):
+            with self.subTest(value=value), self.assertRaises(config.ConfigError):
+                config.load(self.write(value))
+
+    def test_home_mount_requires_an_explicit_supported_value(self):
+        public, _ = config.load(self.write('[server]\nhome_mount="host"'))
+        self.assertEqual(public["home_mount"], "host")
+        with self.assertRaises(config.ConfigError):
+            config.load(self.write('[server]\nhome_mount="invalid"'))
 
 
 class ProxySecretTests(unittest.TestCase):

@@ -9,11 +9,19 @@ set -eu
 umask 022
 uid=$(id -u)
 gid=$(id -g)
+login_shell=/bin/bash
+if command -v zsh >/dev/null 2>&1; then login_shell=/usr/bin/zsh; fi
 name=${USER:-orca}
 if [ "$uid" -ne 0 ]; then
   mkdir -p /tmp/extrausers
   getent passwd "$uid" >/dev/null 2>&1 ||
-    printf '%s:x:%s:%s:orca-setup:%s:/bin/bash\n' "$name" "$uid" "$gid" "${HOME:-/tmp}" >/tmp/extrausers/passwd
+    printf '%s:x:%s:%s:orca-setup:%s:%s\n' "$name" "$uid" "$gid" "${HOME:-/tmp}" "$login_shell" >/tmp/extrausers/passwd
   getent group "$gid" >/dev/null 2>&1 || printf '%s:x:%s:\n' "$name" "$gid" >/tmp/extrausers/group
+fi
+if [ -w "$HOME" ] && [ -r /opt/orca-setup/docker/shell-init.sh ]; then
+  bash /opt/orca-setup/docker/shell-init.sh
+fi
+if [ "${ORCA_INTERNAL_SSH:-no}" = yes ]; then
+  exec python3 /opt/orca-setup/docker/container-services.py "$@"
 fi
 exec "$@"

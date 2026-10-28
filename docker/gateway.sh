@@ -7,10 +7,20 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 . "$ROOT/lib/network-policy.sh"
 
 load_policy() {
-  network_read_env "${1:-/etc/orca-network}/policy.env"
+  local directory=${1:-/etc/orca-network} mode=${2:-orca}
+  NET_EXEC_MODE=blocked
+  if [ "$mode" = executor ] && [ -r "$directory/executor-policy.env" ]; then
+    network_read_env "$directory/executor-policy.env"
+  else
+    network_read_env "$directory/policy.env"
+  fi
   network_validate
   NET_RULES=$(cat "${1:-/etc/orca-network}/allow.tsv")
   network_validate_rules "$NET_RULES"
+}
+
+private_ranges() {
+  printf '%s%s\n' 10 .0.0.0/8 172 .16.0.0/12 192 .168.0.0/16 100 .64.0.0/10 169 .254.0.0/16 127 .0.0.0/8
 }
 
 rules() {
@@ -23,10 +33,17 @@ rules() {
 :POSTROUTING ACCEPT [0:0]
 EOF
   # Replace Docker's embedded-DNS NAT in this namespace as well: 127.0.0.11 must not be a DNS escape hatch.
-  if [ "$mode" = orca ]; then
+  if [ "$mode" = orca ] || { [ "$mode" = executor ] && [ "$NET_EXEC_MODE" = proxy ]; }; then
     printf '%s\n' '-A OUTPUT -d 127.0.0.1/32 -j RETURN'
     printf -- '-A OUTPUT -p tcp -d %s/32 --dport %s -j RETURN\n' "$NET_PROXY_ADDRESS" "$NET_PROXY_PORT"
-    printf -- '-A OUTPUT -p tcp -d %s/32 --dport 7777 -j RETURN\n' "$NET_EXECUTOR_IP"
+    if [ "$mode" = orca ]; then
+      printf -- '-A OUTPUT -p tcp -d %s/32 --dport 7777 -j RETURN\n' "$NET_EXECUTOR_IP"
+      if [ "${NET_INTERNAL_SSH:-no}" = yes ]; then
+        printf -- '-A OUTPUT -p tcp -d %s/32 --dport 2222 -j RETURN\n' "$NET_EXECUTOR_IP"
+      fi
+    else
+      while IFS= read -r cidr; do printf -- '-A OUTPUT -d %s -j RETURN\n' "$cidr"; done < <(private_ranges)
+    fi
     printf '%s\n' '-A OUTPUT -p tcp -j REDIRECT --to-ports 12345'
   fi
   cat <<'EOF'
@@ -42,6 +59,12 @@ COMMIT
 # Match the redirected loopback destination without an interface constraint; it cannot route to the public Internet.
 -A OUTPUT -d 127.0.0.1/32 -j ACCEPT
 EOF
+  if [ "${NET_INTERNAL_SSH:-no}" = yes ]; then
+    local self=$NET_ORCA_IP peer=$NET_EXECUTOR_IP
+    if [ "$mode" = executor ]; then self=$NET_EXECUTOR_IP; peer=$NET_ORCA_IP; fi
+    printf -- '-A INPUT -p tcp -s %s/32 -d %s/32 --dport 2222 -j ACCEPT\n' "$peer" "$self"
+    printf -- '-A OUTPUT -p tcp -d %s/32 --dport 2222 -j ACCEPT\n' "$peer"
+  fi
   if [ "$mode" = orca ]; then
     printf '%s\n' '-A INPUT -p tcp --dport 6768 -j ACCEPT'
     printf -- '-A OUTPUT -p tcp -d %s/32 --dport %s -j ACCEPT\n' "$NET_PROXY_ADDRESS" "$NET_PROXY_PORT"
@@ -61,6 +84,13 @@ EOF
       [ -n "$name" ] || continue
       printf -- '-A OUTPUT -p %s -d %s --dport %s -j ACCEPT\n' "$protocol" "$cidr" "$port"
     done <<<"$NET_RULES"
+    if [ "$NET_EXEC_MODE" = proxy ]; then
+      printf -- '-A OUTPUT -p tcp -d %s/32 --dport %s -j ACCEPT\n' "$NET_PROXY_ADDRESS" "$NET_PROXY_PORT"
+    elif [ "$NET_EXEC_MODE" = direct ]; then
+      # Explicit private allow rules precede these denies; public IPv4 can use the host route.
+      while IFS= read -r cidr; do printf -- '-A OUTPUT -d %s -j REJECT\n' "$cidr"; done < <(private_ranges)
+      printf '%s\n' '-A OUTPUT -d 0.0.0.0/8 -j REJECT' '-A OUTPUT -d 224.0.0.0/4 -j REJECT' '-A OUTPUT -j ACCEPT'
+    fi
   fi
   printf 'COMMIT\n'
 }
@@ -72,6 +102,7 @@ firewall_digest() {
 
 policy_digest() {
   { sha256sum /etc/orca-network/policy.env /etc/orca-network/allow.tsv
+    if [ -f /etc/orca-network/executor-policy.env ]; then sha256sum /etc/orca-network/executor-policy.env; fi
     if [ -f /run/secrets/orca_proxy_auth ]; then sha256sum /run/secrets/orca_proxy_auth; fi
   } | sha256sum | cut -d' ' -f1
 }
@@ -89,7 +120,7 @@ case "${1:-}" in
   check) check; exit ;;
   rules)
     case "${2:-}" in orca | executor) ;; *) exit 2 ;; esac
-    load_policy "${3:-/etc/orca-network}"
+    load_policy "${3:-/etc/orca-network}" "$2"
     rules "$2"
     exit ;;
   orca | executor) mode=$1 ;;
@@ -98,7 +129,7 @@ esac
 
 [ "$(id -u)" -eq 0 ] || { echo 'Only the dedicated network gateway runs as root.' >&2; exit 1; }
 umask 077
-load_policy
+load_policy /etc/orca-network "$mode"
 rm -f /tmp/network-ready /tmp/network-digest
 # Close first; any subsequent failure leaves the namespace blocked. Applications start only after the healthcheck.
 iptables -P OUTPUT DROP
@@ -116,12 +147,14 @@ iptables-restore --wait 5 </tmp/network-rules
 firewall_digest >/tmp/network-digest
 policy_digest >/tmp/network-policy-digest
 
-if [ "$mode" = executor ]; then
+if [ "$mode" = executor ] && [ "$NET_EXEC_MODE" != proxy ]; then
   : >/tmp/network-ready
   exec sleep infinity
 fi
 
-python3 "$ROOT/docker/proxy-config.py" /etc/orca-network/policy.env /tmp/redsocks.conf
+policy=/etc/orca-network/policy.env
+[ "$mode" != executor ] || policy=/etc/orca-network/executor-policy.env
+python3 "$ROOT/docker/proxy-config.py" "$policy" /tmp/redsocks.conf
 redsocks -t -c /tmp/redsocks.conf
 pids=()
 # shellcheck disable=SC2329 # invoked by the EXIT trap
